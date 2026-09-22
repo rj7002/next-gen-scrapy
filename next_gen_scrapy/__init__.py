@@ -21,10 +21,12 @@ See the package README for the full scrape -> extract -> CSVs pipeline.
 from .calib import CalibrationError, Chart, calibrate
 from .carries import detect_carries
 from .passes import detect_blue_rings, detect_passes
+from .pbp_match import load_pbp_with_ftn, match_to_pbp
 from .player import get_carries, get_passes, get_routes
+from .reshape import to_paths
 from .routes import detect_routes
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "__version__",
@@ -32,6 +34,11 @@ __all__ = [
     "get_passes",
     "get_routes",
     "get_carries",
+    # one row per carry/route instead of one row per point
+    "to_paths",
+    # matching a chart to real plays (needs nflreadpy - pip install "next-gen-scrapy[pbp]")
+    "load_pbp_with_ftn",
+    "match_to_pbp",
     # one-image-at-a-time API
     "CalibrationError",
     "Chart",
