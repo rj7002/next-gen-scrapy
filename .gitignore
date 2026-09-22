@@ -1,0 +1,20 @@
+# generated data (regenerate with ngs-scrape / ngs-extract)
+Pass_Charts/
+Route_Charts/
+Carry_Charts/
+*.csv
+*.png
+*.jpg
+!axes.jpg
+
+# python
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# jupyter
+.ipynb_checkpoints/
