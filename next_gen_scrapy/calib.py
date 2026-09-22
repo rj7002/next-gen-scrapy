@@ -20,6 +20,8 @@ B is the LOS row and A/C is the horizon row V, so with B and V known only C is l
 so the detected yard lines have u values in the ratio 1 : 2 : 3 ... and C follows from matching them
 to multiples of 5 yards. Everything is then pinned without knowing which line is which.
 """
+import os
+
 import cv2
 import numpy as np
 
@@ -27,6 +29,11 @@ FIELD_HALF_WIDTH = 160.0 / 6.0   # 26.667 yd
 FIELD_ROWS = 660                 # rows of the image that show the field
 IMG_SIZE = 1200
 YARD_STEP = 5.0                  # yard lines are drawn every 5 yards
+
+
+def read_image(image):
+    """`image` may be a file path (str/Path) or an already-decoded BGR array; returns the array."""
+    return cv2.imread(str(image)) if isinstance(image, (str, os.PathLike)) else image
 
 
 class CalibrationError(ValueError):

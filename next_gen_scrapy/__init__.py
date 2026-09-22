@@ -2,21 +2,21 @@
 next_gen_scrapy: scrape NFL Next Gen Stats pass/route/carry charts and extract field coordinates
 from the chart images.
 
-The simple way in - name a player, a season, optionally which weeks - downloads whatever isn't
-already saved and hands back a tidy DataFrame in field yards:
+The simple way in - name a player, a season, optionally which weeks - downloads the matching chart
+images straight into memory and hands back a tidy DataFrame in field yards. Nothing is saved to disk:
 
     from next_gen_scrapy import get_passes, get_routes, get_carries
 
-    get_passes("Justin Jefferson", 2025)
+    get_passes("Josh Allen", 2025)
     get_carries("Bijan Robinson", 2025, weeks=[1, 2, 3])
 
-The lower-level, one-chart-image-at-a-time functions are also available directly, if you're
-working from your own already-downloaded images:
+If you want the chart images saved to disk instead (so a repeat call doesn't re-download, or so you
+can inspect them yourself), use the `ngs-scrape` / `ngs-extract` console scripts, or the lower-level,
+one-chart-image-at-a-time functions on files `ngs-scrape` already fetched:
 
     from next_gen_scrapy import calibrate, detect_passes, detect_routes, detect_carries
 
-See the package README for the full pipeline (scrape -> extract -> CSVs) and the `ngs-scrape` /
-`ngs-extract` console scripts installed alongside it.
+See the package README for the full scrape -> extract -> CSVs pipeline.
 """
 from .calib import CalibrationError, Chart, calibrate
 from .carries import detect_carries

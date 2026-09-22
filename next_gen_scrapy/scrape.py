@@ -27,6 +27,8 @@ import os
 import sys
 import time
 
+import cv2
+import numpy as np
 import requests
 
 BASE = "https://nextgenstats.nfl.com"
@@ -145,6 +147,16 @@ def save_chart(chart, team, out_root, size="extraLarge"):
     with open(data_file, "w") as f:
         json.dump(chart, f)
     return img_file, data_file, True
+
+
+def fetch_chart_image(chart, size="extraLarge"):
+    """
+    Download one chart's image straight into memory as a decoded BGR array - nothing is written to
+    disk. Used by the player-first API (next_gen_scrapy.player), which never saves chart files.
+    """
+    resp = get("https:" + chart[size + "Img"])
+    buf = np.frombuffer(resp.content, dtype=np.uint8)
+    return cv2.imdecode(buf, cv2.IMREAD_COLOR)
 
 
 def main():

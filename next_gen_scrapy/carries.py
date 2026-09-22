@@ -54,14 +54,15 @@ def detect_red_rings(red_mask, hsv):
 MAX_HANDOFF_Y = 0.5          # a handoff is always behind the line of scrimmage
 
 
-def detect_carries(image_path, expected=None):
+def detect_carries(image, expected=None):
     """
+    `image` is a file path or an already-decoded BGR array (e.g. from cv2.imdecode).
     `expected` (optional): {"carries": n, "touchdowns": n} from the chart metadata; used to merge
     fragments when more lines than carries are found.
     Returns (carries, info); carries = list of dict(color, td, fumble, handoff_ok, pts (Nx2 field yd)).
     handoff_ok is False if the line still starts past the line of scrimmage (its start could not be traced).
     """
-    im = cv2.imread(image_path)
+    im = K.read_image(image)
     hsv = cv2.cvtColor(im, cv2.COLOR_BGR2HSV)
     lay = K.calibrate(im)
     blue_rings = detect_blue_rings(hsv, lay, None if expected is None else expected.get("touchdowns"))

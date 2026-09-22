@@ -64,14 +64,15 @@ def line_masks(im, rings, lay):
     return white, gray, green
 
 
-def detect_routes(image_path, expected=None):
+def detect_routes(image, expected=None):
     """
+    `image` is a file path or an already-decoded BGR array (e.g. from cv2.imdecode).
     `expected` (optional): {"receptions": n, "touchdowns": n} from the chart metadata. If more white
     fragments than receptions are found, the best-fitting fragments are merged until the counts agree.
     Returns (routes, info). routes: list of dict(route_type, td, pts (Nx2 field yd), seg (N labels)).
     route_type is COMPLETE (white line, maybe with after-catch) or INCOMPLETE (gray line).
     """
-    im = cv2.imread(image_path)
+    im = K.read_image(image)
     hsv = cv2.cvtColor(im, cv2.COLOR_BGR2HSV)
     lay = K.calibrate(im)
     rings = detect_blue_rings(hsv, lay, None if expected is None else expected.get("touchdowns"))

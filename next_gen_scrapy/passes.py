@@ -111,13 +111,14 @@ def _touchdown_rings(strict, hsv, allowed, lay, want):
     return [dict(pass_type="TOUCHDOWN", cx=c["cx"], cy=c["cy"]) for c in cands]
 
 
-def detect_passes(image_path, expected=None):
+def detect_passes(image, expected=None):
     """
+    `image` is a file path or an already-decoded BGR array (e.g. from cv2.imdecode).
     Returns (image, [dict(pass_type, cx, cy)]) with pixel centres of every ring found.
     `expected` optionally maps pass_type -> count (from the chart metadata); it is used to
     decide how many rings a merged blob holds and to drop the least ring-like extras.
     """
-    im = cv2.imread(image_path)
+    im = K.read_image(image)
     hsv = cv2.cvtColor(im, cv2.COLOR_BGR2HSV)
     lay = K.calibrate(im)
     allowed = lay.on_card_field(im.shape[:2])
