@@ -18,6 +18,8 @@ one-chart-image-at-a-time functions on files `ngs-scrape` already fetched:
 
 See the package README for the full scrape -> extract -> CSVs pipeline.
 """
+from importlib.metadata import version
+
 from .calib import CalibrationError, Chart, calibrate
 from .carries import detect_carries
 from .passes import detect_blue_rings, detect_passes
@@ -26,7 +28,7 @@ from .player import get_carries, get_passes, get_routes
 from .reshape import to_paths
 from .routes import detect_routes
 
-__version__ = "0.2.0"
+__version__ = version("next-gen-scrapy")
 
 __all__ = [
     "__version__",
