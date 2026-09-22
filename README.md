@@ -18,17 +18,36 @@ The file `pass_and_game_data.csv` is the final version of all pass location data
 
 ## What it does now
 
-| Step | Script | Output |
-|---|---|---|
-| 1. Download chart images + metadata | `scrape.py` | `Pass_Charts/`, `Route_Charts/`, `Carry_Charts/` |
-| 2. Extract coordinates from the images | `main.py` | `pass_locations.csv`, `route_coords.csv`, `carry_coords.csv`, `chart_qc.csv` |
+The pipeline is a proper Python package, `next_gen_scrapy` (source in [`next_gen_scrapy/`](next_gen_scrapy/)),
+installed with its own two command-line tools:
+
+| Step | Command | Module | Output |
+|---|---|---|---|
+| 1. Download chart images + metadata | `ngs-scrape` | `next_gen_scrapy/scrape.py` | `Pass_Charts/`, `Route_Charts/`, `Carry_Charts/` |
+| 2. Extract coordinates from the images | `ngs-extract` | `next_gen_scrapy/extract.py` | `pass_locations.csv`, `route_coords.csv`, `carry_coords.csv`, `chart_qc.csv` |
 
 ```
-pip install -r requirements.txt          # developed on Python 3.14; no R needed
+pip install -e .                                 # developed on Python 3.14; no R needed
 
-python scrape.py --type pass  -s 2025            # also: --type route, --type carry
-python scrape.py --type route -s 2025 -t MIN KC -w 1 2
-python main.py -s 2025                           # extract everything that was scraped
+ngs-scrape --type pass  -s 2025                  # also: --type route, --type carry
+ngs-scrape --type route -s 2025 -t MIN KC -w 1 2
+ngs-extract -s 2025                              # extract everything that was scraped
+```
+
+Both commands read/write relative to the current directory (`Pass_Charts/`, `pass_locations.csv`, ...), same
+as before packaging - `cd` into wherever you want the charts and CSVs to live, then run them from there.
+`ngs-extract` also accepts `--root` (where the `*_Charts` folders are) and `--out` (where to write the CSVs)
+if you want those somewhere else.
+
+The extraction logic is also importable directly, if you want it in your own script rather than through the
+CSVs:
+
+```python
+from next_gen_scrapy import calibrate, detect_passes, detect_routes, detect_carries
+import cv2
+
+im = cv2.imread("Pass_Charts/MIN/2025/1/images/McCarthy_Jonathan_QB.jpeg")
+_, passes, layout = detect_passes("Pass_Charts/MIN/2025/1/images/McCarthy_Jonathan_QB.jpeg")
 ```
 
 `scrape.py` calls the same JSON API the website uses (`/api/content/microsite/chart`, which needs a
@@ -64,7 +83,7 @@ touchdowns, interceptions, receptions, carries), with a `counts_ok` flag. **Filt
 
 ## How it works
 
-**Every chart is calibrated from its own pixels** (`ngs_calib.py`). NGS picks the zoom per chart so the deepest play
+**Every chart is calibrated from its own pixels** (`next_gen_scrapy/calib.py`). NGS picks the zoom per chart so the deepest play
 fits, and in one season's charts the view ranges from 54 to 110 yards deep, so there is no fixed layout to hard-code.
 Each image is measured instead:
 
@@ -77,17 +96,17 @@ That yields a homography per chart. It calibrates 99.6% of charts (the rest are 
 publishes), it reproduces a hand-measured calibration to within 0.07 yd, and the recovered yard lines sit on the
 5-yard grid to about 0.02 yd. Then:
 
-- `ngs_passes.py` finds the coloured rings (green/white/red/blue). Ring size is predicted from the chart's own
+- `next_gen_scrapy/passes.py` finds the coloured rings (green/white/red/blue). Ring size is predicted from the chart's own
   geometry, and overlapping rings are separated using the completion/touchdown/interception counts from the
   metadata - those counts are exact, so the job is to place that many rings rather than to re-count them.
   Touchdown arcs and the LOS bar are excluded.
-- `ngs_paths.py` + `ngs_routes.py` / `ngs_carries.py` trace the drawn lines: skeletonise, split at junctions, and
+- `next_gen_scrapy/paths.py` + `routes.py` / `carries.py` trace the drawn lines: skeletonise, split at junctions, and
   re-join through crossings by choosing the smoothest continuation, bridging gaps where one line is drawn over another.
   After-catch (green) segments are attached to their route, and touchdown / lost-fumble rings are attached to the line
   they end. Lines sharing a start point are separated, and the metadata counts merge stray fragments.
 
 Counts come from the chart metadata, plus - for route charts - the **target count** from the NGS receiving statboard,
-which `scrape.py` merges into the stored metadata. A route chart draws one line per target, so that count bounds the
+which `ngs-scrape` merges into the stored metadata. A route chart draws one line per target, so that count bounds the
 incomplete (grey) routes too; the chart's own metadata only gives receptions, which bounds the completed ones. The
 statboard omits low-volume players, so about 13% of route charts have no target count and fall back to receptions only.
 

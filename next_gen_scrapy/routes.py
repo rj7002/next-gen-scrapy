@@ -11,9 +11,9 @@ from collections import Counter
 import cv2
 import numpy as np
 
-import ngs_calib as K
-import ngs_paths as NP
-from ngs_passes import detect_blue_rings
+from . import calib as K
+from . import paths as NP
+from .passes import detect_blue_rings
 
 RESAMPLE_YD = 0.5
 MAX_START_Y = 1.0            # a route starts at the line of scrimmage (or behind it), never ahead of it

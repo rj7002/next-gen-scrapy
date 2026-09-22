@@ -3,13 +3,13 @@ Extract pass locations from a current-format Next Gen Stats pass chart image.
 
 Each target is drawn as a flat ring on the field:  green = complete, blue = touchdown,
 red = interception, white = incomplete. Touchdowns also get a blue ball-flight arc that we ignore.
-Ring centres are located in image space, then mapped to field coordinates with the chart's own calibration (ngs_calib).
+Ring centres are located in image space, then mapped to field coordinates with the chart's own calibration (calib).
 """
 import cv2
 import numpy as np
 from sklearn.cluster import KMeans
 
-import ngs_calib as K
+from . import calib as K
 
 # colour classes: name -> function(hsv) -> boolean mask
 def _masks(hsv):

@@ -17,8 +17,8 @@ Folder format:
     where [week] is "1".."18" for the regular season and "post-<n>" for the postseason.
 
 Example:
-    python scrape.py -s 2025 -w 1 2 -t MIN
-    python scrape.py --type route -s 2024 2025
+    ngs-scrape -s 2025 -w 1 2 -t MIN
+    ngs-scrape --type route -s 2024 2025
 """
 import argparse
 import glob

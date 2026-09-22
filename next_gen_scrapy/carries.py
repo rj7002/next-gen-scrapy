@@ -9,10 +9,10 @@ of field coordinates (x, y in yards) from its start (in the backfield) to its en
 import cv2
 import numpy as np
 
-import ngs_calib as K
-import ngs_paths as NP
-from ngs_passes import detect_blue_rings
-from ngs_routes import resample_field
+from . import calib as K
+from . import paths as NP
+from .passes import detect_blue_rings
+from .routes import resample_field
 
 COLORS = ("LOSS", "SHORT", "LONG")          # red, yellow, green
 

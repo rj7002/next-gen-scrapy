@@ -1,7 +1,7 @@
 """
 Turn scraped Next Gen Stats chart images into coordinate data.
 
-Reads the charts downloaded by scrape.py ({Pass,Route,Carry}_Charts/<team>/<season>/<week>/images/*.jpeg,
+Reads the charts downloaded by `ngs-scrape` ({Pass,Route,Carry}_Charts/<team>/<season>/<week>/images/*.jpeg,
 with the chart metadata next to each image in ../data/*.json) and writes, in yards on the field
 (x: -26.67 left sideline .. +26.67 right sideline, 0 = middle; y: yards past the line of scrimmage):
 
@@ -11,8 +11,8 @@ with the chart metadata next to each image in ../data/*.json) and writes, in yar
     chart_qc.csv         one row per chart: expected vs. detected counts, so bad extractions are easy to find
 
 Example:
-    python scrape.py --type pass -s 2025
-    python main.py --type pass -s 2025
+    ngs-scrape --type pass -s 2025
+    ngs-extract --type pass -s 2025
 """
 import argparse
 import glob
@@ -23,10 +23,10 @@ from concurrent.futures import ProcessPoolExecutor
 
 import pandas as pd
 
-import ngs_carries
-import ngs_calib as K
-import ngs_passes
-import ngs_routes
+from . import calib as K
+from . import carries as ngs_carries
+from . import passes as ngs_passes
+from . import routes as ngs_routes
 
 TYPES = {"pass": "Pass_Charts", "route": "Route_Charts", "carry": "Carry_Charts"}
 
