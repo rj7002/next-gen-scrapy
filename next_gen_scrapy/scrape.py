@@ -119,6 +119,34 @@ def week_label(chart):
     return str(chart["week"]) if chart["seasonType"] == "REG" else "post-" + str(chart["week"])
 
 
+def chart_paths(chart, team, out_root):
+    """Where one chart's image and metadata live/would live on disk."""
+    name = "_".join([chart["lastName"], chart["firstName"], chart["position"]]).replace(os.sep, "-")
+    folder = os.path.join(out_root, team, str(chart["season"]), week_label(chart))
+    return os.path.join(folder, "images", name + ".jpeg"), os.path.join(folder, "data", name + ".json")
+
+
+def save_chart(chart, team, out_root, size="extraLarge"):
+    """
+    Save one chart's image + metadata to disk (skipping it if already there). Returns
+    (img_path, data_path, downloaded) - `downloaded` is False if it was already present.
+    Shared by the bulk `ngs-scrape` CLI and the player-first API (next_gen_scrapy.player).
+    """
+    img_file, data_file = chart_paths(chart, team, out_root)
+    if os.path.exists(img_file) and os.path.exists(data_file):
+        return img_file, data_file, False
+
+    os.makedirs(os.path.dirname(img_file), exist_ok=True)
+    os.makedirs(os.path.dirname(data_file), exist_ok=True)
+    img = get("https:" + chart[size + "Img"])
+    with open(img_file, "wb") as f:
+        f.write(img.content)
+    chart = dict(chart, team=team)
+    with open(data_file, "w") as f:
+        json.dump(chart, f)
+    return img_file, data_file, True
+
+
 def main():
     parser = argparse.ArgumentParser(description="Download charts from NFL Next Gen Stats")
     parser.add_argument("--type", choices=["pass", "route", "carry"], default="pass")
@@ -146,27 +174,13 @@ def main():
             if (want_teams and team not in want_teams) or (want_weeks and week not in want_weeks):
                 continue
 
-            name = "_".join([chart["lastName"], chart["firstName"], chart["position"]]).replace(os.sep, "-")
-            folder = os.path.join(out_root, team, str(chart["season"]), week)
-            img_file = os.path.join(folder, "images", name + ".jpeg")
-            data_file = os.path.join(folder, "data", name + ".json")
-
-            if os.path.exists(img_file) and os.path.exists(data_file):
+            _, _, downloaded = save_chart(chart, team, out_root, size=args.size)
+            if not downloaded:
                 n_skipped += 1
                 continue
 
-            os.makedirs(os.path.dirname(img_file), exist_ok=True)
-            os.makedirs(os.path.dirname(data_file), exist_ok=True)
-
-            img = get("https:" + chart[args.size + "Img"])
-            with open(img_file, "wb") as f:
-                f.write(img.content)
-            chart["team"] = team
-            with open(data_file, "w") as f:
-                json.dump(chart, f)
-
             n_new += 1
-            print("  ", team, week, name, flush=True)
+            print("  ", team, week, chart["lastName"], chart["firstName"], flush=True)
             time.sleep(args.delay)
 
     if args.type == "route":
