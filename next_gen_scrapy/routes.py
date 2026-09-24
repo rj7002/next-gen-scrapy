@@ -36,8 +36,20 @@ def is_label_glyph(pts):
     return span < GLYPH_MAX_SPAN_YD and gap < GLYPH_MAX_GAP_YD and centre_x >= GLYPH_MIN_ABS_X_YD
 
 
-def resample_field(lay, px_path, step=RESAMPLE_YD, smooth=5):
-    """Pixel polyline -> evenly spaced (by arc length) field-coordinate polyline."""
+def resample_field(lay, px_path, step=RESAMPLE_YD, smooth=5, ceiling=None):
+    """
+    Pixel polyline -> evenly spaced (by arc length) field-coordinate polyline.
+
+    Truncated at min(lay.max_reliable_yard, ceiling): past the deepest yard line the chart's own
+    calibration could verify, row_to_yard is extrapolating the perspective curve past any real
+    gridline evidence, and a small pixel wobble in a traced path gets amplified into yards the
+    further out it goes (see calib.calibrate). `ceiling`, when given, is a tighter box-score bound
+    (a single route/carry/pass can never be deeper than the player's own game total for that stat) -
+    a second, independent check, since the gridline-detection noise that max_reliable_yard guards
+    against can itself occasionally produce a confident-looking but wrong deep anchor (a handful of
+    spuriously-aligned candidate rows can vote past real gridlines with no nearby corroboration).
+    Returns (pts, truncated) - truncated is True if points were cut.
+    """
     p = np.asarray(px_path, float)
     if len(p) > smooth * 2:                               # light moving-average, endpoints kept
         k = np.ones(smooth) / smooth
@@ -47,9 +59,17 @@ def resample_field(lay, px_path, step=RESAMPLE_YD, smooth=5):
     seg = np.linalg.norm(np.diff(f, axis=0), axis=1)
     s = np.concatenate([[0], np.cumsum(seg)])
     if s[-1] < 1e-6:
-        return f[:1]
+        return f[:1], False
     grid = np.unique(np.concatenate([np.arange(0, s[-1], step), [s[-1]]]))
-    return np.column_stack([np.interp(grid, s, f[:, 0]), np.interp(grid, s, f[:, 1])])
+    pts = np.column_stack([np.interp(grid, s, f[:, 0]), np.interp(grid, s, f[:, 1])])
+    ceiling = lay.max_reliable_yard if ceiling is None else min(ceiling, lay.max_reliable_yard)
+    over = np.where(pts[:, 1] > ceiling)[0]
+    if len(over):
+        # over[0] can be 0: a line traced entirely beyond the calibrated grid (not a real route at
+        # all, just some other artifact in the deep, ungridded part of the chart art) truncates to
+        # nothing. The caller drops anything left with fewer than 2 points - not enough for a path.
+        return pts[:over[0]], True
+    return pts, False
 
 
 def _endpoints(p):
@@ -86,12 +106,16 @@ def detect_routes(image, expected=None):
     `image` is a file path or an already-decoded BGR array (e.g. from cv2.imdecode).
     `expected` (optional): {"receptions": n, "touchdowns": n} from the chart metadata. If more white
     fragments than receptions are found, the best-fitting fragments are merged until the counts agree.
+    `expected["max_yards"]` (optional): the player's total receivingYards for the game, from the same
+    chart metadata - a single route can never be deeper than that, which is a useful independent check
+    on top of the chart's own calibration (see resample_field).
     Returns (routes, info). routes: list of dict(route_type, td, pts (Nx2 field yd), seg (N labels)).
     route_type is COMPLETE (white line, maybe with after-catch) or INCOMPLETE (gray line).
     """
     im = K.read_image(image)
     hsv = cv2.cvtColor(im, cv2.COLOR_BGR2HSV)
     lay = K.calibrate(im)
+    ceiling = None if expected is None else expected.get("max_yards")
     rings = detect_blue_rings(hsv, lay, None if expected is None else expected.get("touchdowns"))
     white_m, gray_m, green_m = line_masks(im, rings, lay)
 
@@ -246,9 +270,16 @@ def detect_routes(image, expected=None):
 
     out = []
     n_glyphs = 0
+    n_deep_truncated = 0
+    n_deep_dropped = 0
     for o in oriented:
         px, seg = o["px"], o["seg"]
-        pts = resample_field(lay, px)
+        pts, truncated = resample_field(lay, px, ceiling=ceiling)
+        if truncated:
+            n_deep_truncated += 1
+            if len(pts) < 2:          # the whole line lived beyond the calibrated grid
+                n_deep_dropped += 1
+                continue
         if is_label_glyph(pts):
             n_glyphs += 1
             continue
@@ -262,5 +293,6 @@ def detect_routes(image, expected=None):
         out.append(dict(route_type=o["route_type"], td=o["td"], pts=pts, seg=seg_f,
                         start_ok=bool(pts[0][1] <= MAX_START_Y)))
     out.sort(key=lambda r: (r["pts"][0][1], r["pts"][0][0]))
-    return out, dict(depth_yd=round(float(lay.row_to_yard(0.0)), 1), n_white=len(white), n_gray=len(gray), n_green=len(green), orphan_green=orphans,
-                     n_td_rings=len(rings), n_label_glyphs=n_glyphs)
+    return out, dict(depth_yd=round(lay.max_reliable_yard, 1), n_white=len(white), n_gray=len(gray), n_green=len(green), orphan_green=orphans,
+                     n_td_rings=len(rings), n_label_glyphs=n_glyphs, n_deep_truncated=n_deep_truncated,
+                     n_deep_dropped=n_deep_dropped)

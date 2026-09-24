@@ -118,10 +118,15 @@ def _yard_rows(im, los_last):
 class Chart:
     """Calibration of one chart image: converts between image pixels and field yards."""
 
-    def __init__(self, B, V, C, left, right, quality):
+    def __init__(self, B, V, C, left, right, quality, max_reliable_yard=None):
         self.B, self.V, self.C = B, V, C
         self.left, self.right = left, right
         self.quality = quality
+        # Deepest yard line that actually voted for this chart's scale (see calibrate()). Beyond it,
+        # row_to_yard is pure extrapolation of the perspective curve past any real gridline evidence -
+        # trustworthy near the anchor, but a small pixel wobble in a traced path gets amplified further
+        # out. Defaults to the whole field so a Chart built without this (e.g. in tests) still works.
+        self.max_reliable_yard = max_reliable_yard if max_reliable_yard is not None else float("inf")
         self.A = V * C
         far = self.row_to_yard(0.0) if C else 100.0
         src = np.array([[side * FIELD_HALF_WIDTH, d] for d in (far * 0.9, -10.0) for side in (-1, 1)],
@@ -209,8 +214,8 @@ class Chart:
         return m
 
     def __repr__(self):
-        return "<Chart LOS row %.1f, horizon %.0f, %.1f yd deep, fit %.2f px>" % (
-            self.B, self.V, self.row_to_yard(0.0), self.quality["yard_rms"])
+        return "<Chart LOS row %.1f, horizon %.0f, %.1f yd reliable, fit %.2f px>" % (
+            self.B, self.V, self.max_reliable_yard, self.quality["yard_rms"])
 
 
 def calibrate(im):
@@ -255,9 +260,26 @@ def calibrate(im):
     if best is None:
         raise CalibrationError("yard lines do not fit a 5-yard grid (%d rows)" % len(u))
     _, C, err, hit = best
+    # The deepest yard line that actually won the vote, walking outward from the LOS and stopping at
+    # the first suspiciously large gap - not just the single deepest hit. Past a chart's real gridlines,
+    # row_to_yard is extrapolating the perspective curve with no anchor, and the compressed, hazy top
+    # of the chart art can have real gridlines too close together to detect individually - but by
+    # chance, a handful of noisy candidate rows up there can still land close enough to a 5-yard
+    # multiple to "vote" despite not being a real corroborated line. Near the LOS this never happens
+    # (rows are far enough apart there that a spurious near-miss is implausible), so consecutive real
+    # hits gap by 5-15 yd (some lines are missed, alternating in practice); a much bigger jump means
+    # whatever voted past it has no nearby corroboration and is a lucky alignment, not a real anchor.
+    MAX_HIT_GAP_YD = 15.0
+    hit_d = np.sort((u / C)[hit])
+    max_reliable_yard = float(hit_d[0])
+    for v in hit_d[1:]:
+        if v - max_reliable_yard > MAX_HIT_GAP_YD:
+            break
+        max_reliable_yard = float(v)
 
     chart = Chart(B, V, C, (ml, cl), (mr, cr),
                   quality=dict(yard_rms=float(np.sqrt(np.mean(err[hit] ** 2))), n_yard_lines=int(hit.sum()),
-                               sideline_rms=max(rms_l, rms_r), sideline_inliers=min(frac_l, frac_r)))
+                               sideline_rms=max(rms_l, rms_r), sideline_inliers=min(frac_l, frac_r)),
+                  max_reliable_yard=max_reliable_yard)
     chart.los_first, chart.los_last = float(bar[0]), float(bar[-1])
     return chart

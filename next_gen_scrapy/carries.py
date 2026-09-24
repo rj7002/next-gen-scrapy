@@ -59,11 +59,16 @@ def detect_carries(image, expected=None):
     `image` is a file path or an already-decoded BGR array (e.g. from cv2.imdecode).
     `expected` (optional): {"carries": n, "touchdowns": n} from the chart metadata; used to merge
     fragments when more lines than carries are found.
+    `expected["max_yards"]` (optional): the player's total rushingYards for the game, from the same
+    chart metadata - an extra, independent cap on top of the chart's own calibration (see
+    routes.resample_field). Looser than for routes/passes: an individual carry can in principle run
+    longer than the game total if other carries lost yardage, but it still catches gross errors.
     Returns (carries, info); carries = list of dict(color, td, fumble, handoff_ok, pts (Nx2 field yd)).
     handoff_ok is False if the line still starts past the line of scrimmage (its start could not be traced).
     """
     im = K.read_image(image)
     hsv = cv2.cvtColor(im, cv2.COLOR_BGR2HSV)
+    ceiling = None if expected is None else expected.get("max_yards")
     lay = K.calibrate(im)
     blue_rings = detect_blue_rings(hsv, lay, None if expected is None else expected.get("touchdowns"))
     masks = carry_masks(hsv, lay, blue_rings)
@@ -125,8 +130,19 @@ def detect_carries(image, expected=None):
         o["kind"] = o["color"]
     NP.attach_trunks(out, lay.img_to_field, MAX_HANDOFF_Y)                                  # strict: smooth continuation
     NP.attach_trunks(out, lay.img_to_field, MAX_HANDOFF_Y, max_dist=70.0, min_align=0.0, passes=2)   # looser, what is left
+    n_deep_truncated = n_deep_dropped = 0
+    kept = []
     for o in out:
-        o["pts"] = resample_field(lay, o.pop("px"))
-        o["handoff_ok"] = bool(o["pts"][0][1] <= MAX_HANDOFF_Y)
+        pts, truncated = resample_field(lay, o.pop("px"), ceiling=ceiling)
+        if truncated:
+            n_deep_truncated += 1
+            if len(pts) < 2:          # the whole line lived beyond the calibrated grid
+                n_deep_dropped += 1
+                continue
+        o["pts"] = pts
+        o["handoff_ok"] = bool(pts[0][1] <= MAX_HANDOFF_Y)
+        kept.append(o)
+    out = kept
     out.sort(key=lambda c: (c["pts"][0][0], c["pts"][0][1]))
-    return out, dict(depth_yd=round(float(lay.row_to_yard(0.0)), 1), n_lines=len(lines), n_td_rings=len(blue_rings), n_fumble_rings=len(red_rings))
+    return out, dict(depth_yd=round(lay.max_reliable_yard, 1), n_lines=len(lines), n_td_rings=len(blue_rings),
+                     n_fumble_rings=len(red_rings), n_deep_truncated=n_deep_truncated, n_deep_dropped=n_deep_dropped)

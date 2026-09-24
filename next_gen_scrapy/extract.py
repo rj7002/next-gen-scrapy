@@ -47,6 +47,18 @@ def process_pass(image_path, meta):
     rows = [dict(base, pass_type=f["pass_type"], located=True,
                  x_coord=round(float(p[0]), 2), y_coord=round(float(p[1]), 2))
             for f, p in zip(found, pts)]
+    # A ring detected past the chart's deepest verified yard line has a real ring (it was found), but
+    # its field position is extrapolated past any gridline evidence and cannot be trusted (see
+    # calib.calibrate / routes.resample_field). Keep the row - it still counts toward the box score -
+    # but drop the coordinates rather than report a likely-wrong deep location.
+    # A single pass can never be deeper than the passer's own game total - an independent check on
+    # top of the chart's own calibration, for the same reason routes.resample_field takes one too.
+    ceiling = min(lay.max_reliable_yard, meta.get("passingYards", float("inf")))
+    n_deep_dropped = 0
+    for r in rows:
+        if r["y_coord"] is not None and r["y_coord"] > ceiling:
+            r["located"], r["x_coord"], r["y_coord"] = False, None, None
+            n_deep_dropped += 1
     got = {k: sum(f["pass_type"] == k for f in found) for k in ("COMPLETE", "TOUCHDOWN", "INTERCEPTION", "INCOMPLETE")}
     # Every completion, touchdown and interception IS drawn on the chart, so if one was not found it is
     # hidden under another ring. Emit it with no coordinates rather than dropping it, so the row counts
@@ -54,11 +66,12 @@ def process_pass(image_path, meta):
     for ptype, n in expected.items():
         for _ in range(max(0, n - got[ptype])):
             rows.append(dict(base, pass_type=ptype, located=False, x_coord=None, y_coord=None))
-    qc = dict(base, depth_yd=round(float(lay.row_to_yard(0.0)), 1), expected_complete=expected["COMPLETE"], detected_complete=got["COMPLETE"],
+    qc = dict(base, depth_yd=round(lay.max_reliable_yard, 1), expected_complete=expected["COMPLETE"], detected_complete=got["COMPLETE"],
               expected_td=td, detected_td=got["TOUCHDOWN"], expected_int=meta["interceptions"],
               detected_int=got["INTERCEPTION"], attempts=meta["attempts"],
               detected_incomplete=got["INCOMPLETE"],
-              expected_incomplete=meta["attempts"] - meta["completions"] - meta["interceptions"])
+              expected_incomplete=meta["attempts"] - meta["completions"] - meta["interceptions"],
+              n_deep_dropped=n_deep_dropped)
     qc["counts_ok"] = (qc["expected_complete"] == qc["detected_complete"] and td == got["TOUCHDOWN"]
                        and meta["interceptions"] == got["INTERCEPTION"])
     return rows, qc
@@ -67,7 +80,7 @@ def process_pass(image_path, meta):
 def process_route(image_path, meta):
     routes, info = ngs_routes.detect_routes(
         image_path, {"receptions": meta["receptions"], "touchdowns": meta["touchdowns"],
-                     "targets": meta.get("targets")})
+                     "targets": meta.get("targets"), "max_yards": meta.get("receivingYards")})
     base = chart_info(meta, image_path)
     rows = []
     for i, r in enumerate(routes, 1):
@@ -78,13 +91,15 @@ def process_route(image_path, meta):
     qc = dict(base, depth_yd=info["depth_yd"], expected_receptions=meta["receptions"], detected_complete=n_c,
               expected_targets=meta.get("targets"), detected_routes=len(routes),
               detected_incomplete=len(routes) - n_c, expected_td=meta["touchdowns"], detected_td_rings=info["n_td_rings"],
+              n_deep_truncated=info["n_deep_truncated"], n_deep_dropped=info["n_deep_dropped"],
               counts_ok=(n_c == meta["receptions"] and info["n_td_rings"] == meta["touchdowns"]))
     return rows, qc
 
 
 def process_carry(image_path, meta):
     carries, info = ngs_carries.detect_carries(
-        image_path, {"carries": meta["carries"], "touchdowns": meta["touchdowns"]})
+        image_path, {"carries": meta["carries"], "touchdowns": meta["touchdowns"],
+                     "max_yards": meta.get("rushingYards")})
     base = chart_info(meta, image_path)
     rows = []
     for i, c in enumerate(carries, 1):
@@ -93,6 +108,7 @@ def process_carry(image_path, meta):
                              handoff_ok=c["handoff_ok"], point=j, x_coord=round(float(x), 2), y_coord=round(float(y), 2)))
     qc = dict(base, depth_yd=info["depth_yd"], expected_carries=meta["carries"], detected_carries=len(carries),
               expected_td=meta["touchdowns"], detected_td_rings=info["n_td_rings"],
+              n_deep_truncated=info["n_deep_truncated"], n_deep_dropped=info["n_deep_dropped"],
               counts_ok=(len(carries) == meta["carries"] and info["n_td_rings"] == meta["touchdowns"]))
     return rows, qc
 
