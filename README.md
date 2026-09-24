@@ -1,22 +1,30 @@
-# Intro to `next-gen-scrapy`
+# next-gen-scrapy
 
-## Summary
-This is the second version released of `next-gen-scrapy`. The first generation of next-gen-scrapy was built to allow users to extract all pass locations -  completions, incompletions, interceptions, and touchdowns - from the regular season and postseason pass charts provided by Next Gen Stats beginning in 2017. This version was created by Sarah Mallepalle and her team at Carnegie Mellon University - you can find detailed description of that work here: https://arxiv.org/abs/1906.03339. Thanks to Sarah for such an amazing contribution to the public!
+Scrape NFL **Next Gen Stats** pass, route and carry charts and turn the drawn chart art back into
+field coordinates.
 
-I have contributed an additional script which modified the original code to scrape the Next Gen Stats route charts, instead of the passing locations. This scrapes all completed, incomplete, and yards after completion using largely the same framework as the original version. The difference is that instead of a clustering algorithm to identify the center of the pass locations, the entire route is used and each pixel from that route is translated into coordinates. The outputs are the same as the pass data, with the exception of a "position" column to reflect the position of the targeted receiver. Additionally, I have added a script to scrape all of the carry charts.
+Next Gen Stats publishes per-player chart images - every pass a quarterback threw, every route a
+receiver was targeted on, every carry a back took - but only as pictures. This package downloads
+those images and recovers the underlying data from them: each pass becomes an `(x, y)` location in
+yards from the line of scrimmage, and each route or carry becomes an ordered path of `(x, y)` points
+along the field.
 
-Below is Sarah's description of the tool:
+```
+pip install next-gen-scrapy
 
-"The pass charts are scraped from the NFL's official Next Gen Stats website, https://nextgenstats.nfl.com/charts/list/pass. After obtaining all of the pass chart images from the website, for every pass chart, the field is then undistorted, and all pass locations on the field relative to the line of scrimmage are extracted in (x,y) coordinate format. 
+ngs-scrape --type route -s 2025      # download the chart images + metadata
+ngs-extract -s 2025                  # turn them into CSVs
+```
 
-The file `pass_and_game_data.csv` is the final version of all pass location data for the 2017 and 2018 regular seasons and postseasons. After all Python and R scripts are run, for every available pass chart, the data contains Game ID, home team, away team, week, season, player, type of pass, and pass location from the line of scrimmage. This repo will be maintained regularly for bug fixes and new, exciting features and updates - including wide receiver route locations coming soon! Thank you to Sam Ventura, Kostas Pelechrinis, and Ron Yurko for all your help and guidance with this project!"
+Every chart is calibrated from its own pixels, so there is no hard-coded layout to break when NGS
+changes the zoom, and every chart is checked against the box score so you know which ones to trust.
 
 > **Status: revived for the current Next Gen Stats site (built and checked on 2025; 2022 and 2024 charts spot-checked).** The site is now a
 > single-page app and the chart art was redesigned, so the original HTML-scraping and image-undistortion code no
 > longer works. It is preserved in [`archive/`](archive/) (2017-2018 layout); the pipeline below replaces it.
 > `pass_and_game_data.csv` / `all_pass_locations.csv` are the original 2017-2018 outputs.
 
-## What it does now
+## What it does
 
 The pipeline is a proper Python package, `next_gen_scrapy` (source in [`next_gen_scrapy/`](next_gen_scrapy/)),
 installed with its own two command-line tools:
@@ -138,7 +146,15 @@ Of 17,668 extracted passes, 17,658 (99.94%) have coordinates; the 10 without are
 - **If the chart art changes**, a chart that cannot be calibrated is reported in `chart_qc.csv` rather than silently
   mis-scaled. Because calibration is per chart, a new zoom level needs no code change.
 
-## Original 2017-2018 pipeline
+## Credits
 
-See `archive/` (Python 3.7 + R + nflscrapR). Original credits: Sarah Mallepalle and the CMU team, Sam Ventura,
-Kostas Pelechrinis, Ron Yurko; route and carry extensions by Arrowhead Analytics.
+`next-gen-scrapy` was created by **Sarah Mallepalle** and her team at Carnegie Mellon University, with
+**Sam Ventura**, **Kostas Pelechrinis** and **Ron Yurko**. Their original work extracted every pass location -
+completions, incompletions, interceptions and touchdowns - from the 2017-2018 NGS pass charts, and is
+written up in [*Extracting NFL Tracking Data from Images to Evaluate Quarterbacks and Pass
+Defenses*](https://arxiv.org/abs/1906.03339). The idea that these chart images are recoverable data at all is
+theirs; this package only carries it forward. Route and carry extensions came from Arrowhead Analytics.
+
+The original 2017-2018 pipeline (Python 3.7 + R + nflscrapR) is preserved in [`archive/`](archive/). The current
+package is a rewrite for the redesigned NGS site: per-chart calibration instead of a fixed undistortion,
+line tracing for routes and carries, and box-score QC on every chart.

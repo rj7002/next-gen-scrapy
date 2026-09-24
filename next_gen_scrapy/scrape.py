@@ -177,7 +177,7 @@ def main():
     want_weeks = set(args.weeks) if args.weeks else None
     out_root = args.type.capitalize() + "_Charts"
 
-    n_new = n_skipped = 0
+    n_new = n_skipped = n_failed = 0
     for season in args.seasons:
         print("Season", season, "...", flush=True)
         for chart in fetch_charts(args.type, season):
@@ -186,7 +186,12 @@ def main():
             if (want_teams and team not in want_teams) or (want_weeks and week not in want_weeks):
                 continue
 
-            _, _, downloaded = save_chart(chart, team, out_root, size=args.size)
+            try:
+                _, _, downloaded = save_chart(chart, team, out_root, size=args.size)
+            except Exception as e:      # one broken/expired CDN link should not stop the whole run
+                n_failed += 1
+                print("  FAILED", team, week, chart["lastName"], chart["firstName"], "-", e, flush=True)
+                continue
             if not downloaded:
                 n_skipped += 1
                 continue
@@ -199,7 +204,7 @@ def main():
         print("Fetching target counts (they bound how many routes a chart draws)...", flush=True)
         backfill_targets(out_root, set(args.seasons) if args.seasons else None)
 
-    print("Done. %d downloaded, %d already present." % (n_new, n_skipped))
+    print("Done. %d downloaded, %d already present, %d failed." % (n_new, n_skipped, n_failed))
 
 
 if __name__ == "__main__":

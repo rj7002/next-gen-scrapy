@@ -194,9 +194,12 @@ class Chart:
         outside = ((cols < lx) & (cols > lx - band)) | ((cols > rx) & (cols < rx + band))
         outside[FIELD_ROWS:] = False
         m |= outside
-        r0, r1 = int(self.B) - 21, int(self.B) + 17            # the two 'LOS' labels, in the corners
-        m[max(0, r0):r1, 0:78] = True
-        m[max(0, r0):r1, shape[1] - 78:] = True
+        # The two 'LOS' labels, in the corners. Boxes are generous on purpose: at 78 px wide / -21..+17
+        # rows they clipped the glyphs, and the bowl of the 'O' survived as a closed contour that the
+        # route tracer then emitted as a ~3 yd x 1 yd "route" sitting on the sideline.
+        r0, r1 = int(self.B) - 30, int(self.B) + 26
+        m[max(0, r0):r1, 0:110] = True
+        m[max(0, r0):r1, shape[1] - 110:] = True
         return m
 
     def los_bar_mask(self, shape=(IMG_SIZE, IMG_SIZE), pad=4):

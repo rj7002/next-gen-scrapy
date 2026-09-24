@@ -18,6 +18,23 @@ from .passes import detect_blue_rings
 RESAMPLE_YD = 0.5
 MAX_START_Y = 1.0            # a route starts at the line of scrimmage (or behind it), never ahead of it
 
+# Overlay text printed outside the sidelines ('LOS', '+10', '+20' ...) is masked in calib.text_mask,
+# but a clipped glyph can still leave a small closed contour behind. A real route is never a tiny
+# closed loop parked on the sideline, so drop those: checked against 51.5k scraped routes, this
+# removes 134 glyph fragments and zero genuine routes (no real route's centroid reaches the sideline).
+GLYPH_MAX_SPAN_YD = 6.0      # bounding box of the fragment
+GLYPH_MAX_GAP_YD = 2.5       # end returns to the start => closed loop
+GLYPH_MIN_ABS_X_YD = 24.0    # centred at/outside the sideline (26.67)
+
+
+def is_label_glyph(pts):
+    """A closed, tiny contour sitting on the sideline is overlay text, not a route."""
+    x, y = pts[:, 0], pts[:, 1]
+    span = max(x.max() - x.min(), y.max() - y.min())
+    gap = float(np.hypot(x[-1] - x[0], y[-1] - y[0]))
+    centre_x = abs((x.min() + x.max()) / 2)
+    return span < GLYPH_MAX_SPAN_YD and gap < GLYPH_MAX_GAP_YD and centre_x >= GLYPH_MIN_ABS_X_YD
+
 
 def resample_field(lay, px_path, step=RESAMPLE_YD, smooth=5):
     """Pixel polyline -> evenly spaced (by arc length) field-coordinate polyline."""
@@ -228,9 +245,13 @@ def detect_routes(image, expected=None):
             oriented[int(np.argmin(dists))]["td"] = True
 
     out = []
+    n_glyphs = 0
     for o in oriented:
         px, seg = o["px"], o["seg"]
         pts = resample_field(lay, px)
+        if is_label_glyph(pts):
+            n_glyphs += 1
+            continue
         # per-point segment label via nearest original pixel
         seg_f = np.array(["route"] * len(pts), dtype=object)
         if (seg == "after_catch").any():
@@ -242,4 +263,4 @@ def detect_routes(image, expected=None):
                         start_ok=bool(pts[0][1] <= MAX_START_Y)))
     out.sort(key=lambda r: (r["pts"][0][1], r["pts"][0][0]))
     return out, dict(depth_yd=round(float(lay.row_to_yard(0.0)), 1), n_white=len(white), n_gray=len(gray), n_green=len(green), orphan_green=orphans,
-                     n_td_rings=len(rings))
+                     n_td_rings=len(rings), n_label_glyphs=n_glyphs)
