@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "next-gen-scrapy"
-version = "0.2.3"
-description = "Scrape NFL Next Gen Stats pass/route/carry charts and extract field coordinates from the chart images"
+version = "0.3.0"
+description = "Scrape NFL Next Gen Stats pass/route/carry charts, extract field coordinates from the chart images, and match them to play-by-play"
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
@@ -21,9 +21,12 @@ dependencies = [
     "opencv-python-headless",
 ]
 
+[project.urls]
+Homepage = "https://github.com/rj7002/next-gen-scrapy"
+Repository = "https://github.com/rj7002/next-gen-scrapy"
+
 [project.optional-dependencies]
 pbp = ["nflreadpy", "pyarrow"]
-api = ["fastapi", "uvicorn[standard]"]
 
 [project.scripts]
 ngs-scrape = "next_gen_scrapy.scrape:main"

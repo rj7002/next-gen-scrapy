@@ -5,7 +5,8 @@ Every row here is a chart entity (pass, route, or carry) matched to its real nfl
 recovered (x, y) coordinates, every play-level feature (down, distance, EPA, WP, coverage,
 play-action, ...) is filterable and exportable too.
 
-Run:
+Run (from a clone of the repo; the site is not part of the PyPI package):
+    pip install -e ".[pbp]" fastapi "uvicorn[standard]"
     .venv/bin/python service/build_matches.py     # once per season, needs network (nflreadpy)
     .venv/bin/python service/build_db.py           # rebuild the queryable DB
     .venv/bin/uvicorn service.app:app --reload

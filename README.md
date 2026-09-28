@@ -24,7 +24,7 @@ passes = get_passes("Josh Allen", 2025, weeks=[1, 2])      # downloads the chart
 
 > **Status: revived for the current Next Gen Stats site.** The site is now a single-page app and the chart art
 > was redesigned, so the original HTML-scraping and image-undistortion code no longer works. It is preserved in
-> [`archive/`](archive/) (2017-2018 layout); everything below replaces it. Checked against every season from
+> [`archive/`](https://github.com/rj7002/next-gen-scrapy/tree/main/archive) (2017-2018 layout); everything below replaces it. Checked against every season from
 > 2018 to 2025.
 
 ---
@@ -627,6 +627,6 @@ in [*Extracting NFL Tracking Data from Images to Evaluate Quarterbacks and Pass
 Defenses*](https://arxiv.org/abs/1906.03339). The idea that these chart images are recoverable data at all is
 theirs; this package only carries it forward. Route and carry extensions came from Arrowhead Analytics.
 
-The original 2017-2018 pipeline (Python 3.7 + R + nflscrapR) is preserved in [`archive/`](archive/). The current
+The original 2017-2018 pipeline (Python 3.7 + R + nflscrapR) is preserved in [`archive/`](https://github.com/rj7002/next-gen-scrapy/tree/main/archive). The current
 package is a rewrite for the redesigned NGS site: per-chart calibration instead of a fixed undistortion, line
 tracing for routes and carries, box-score QC on every chart, and matching to play-by-play.
