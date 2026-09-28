@@ -15,6 +15,8 @@ is an assignment problem, not a join:
 This needs nflreadpy (`pip install "next-gen-scrapy[pbp]"`), which is not a core dependency of the
 scrape/extract pipeline - only of this module.
 """
+import warnings
+
 import numpy as np
 import pandas as pd
 
@@ -90,22 +92,40 @@ def load_pbp_with_ftn(seasons, participation=True):
     pbp = nfl.load_pbp(seasons=seasons).to_pandas()
 
     ftn_seasons = [s for s in seasons if int(s) >= 2022]
-    if ftn_seasons:
-        ftn = nfl.load_ftn_charting(seasons=ftn_seasons).to_pandas()
+    ftn_frames = []
+    for s in ftn_seasons:
+        try:
+            ftn_frames.append(nfl.load_ftn_charting(seasons=[int(s)]).to_pandas())
+        except ValueError as e:                  # not published for this season (yet)
+            warnings.warn(f"no FTN charting for {s} yet ({e}); its FTN columns are left empty")
+    if ftn_frames:
+        ftn = pd.concat(ftn_frames, ignore_index=True)
         ftn["nflverse_play_id"] = ftn["nflverse_play_id"].astype("float64")
         ftn = ftn.drop(columns=["season", "week"])
         pbp = pbp.merge(ftn, left_on=["game_id", "play_id"], right_on=["nflverse_game_id", "nflverse_play_id"],
                         how="left")
 
     if participation:
-        part = nfl.load_participation(seasons=seasons).to_pandas()
-        keep = {k: v for k, v in _PARTICIPATION_COLS.items() if k in part.columns}
-        part = part[["nflverse_game_id", "play_id", *keep]].rename(columns=keep)
-        part = part.rename(columns={"nflverse_game_id": "_part_game_id", "play_id": "_part_play_id"})
-        part["_part_play_id"] = part["_part_play_id"].astype("float64")
-        part = part.drop_duplicates(subset=["_part_game_id", "_part_play_id"])
-        pbp = pbp.merge(part, left_on=["game_id", "play_id"], right_on=["_part_game_id", "_part_play_id"],
-                        how="left").drop(columns=["_part_game_id", "_part_play_id"])
+        # nflverse publishes participation data a season behind (e.g. none yet for the season in
+        # progress): load what exists, and leave the columns empty - with a warning - for the rest
+        frames = []
+        for s in seasons:
+            try:
+                frames.append(nfl.load_participation(seasons=[int(s)]).to_pandas())
+            except ValueError as e:
+                warnings.warn(f"no NGS participation data for {s} yet ({e}); its participation columns are left empty")
+        if frames:
+            part = pd.concat(frames, ignore_index=True)
+            keep = {k: v for k, v in _PARTICIPATION_COLS.items() if k in part.columns}
+            part = part[["nflverse_game_id", "play_id", *keep]].rename(columns=keep)
+            part = part.rename(columns={"nflverse_game_id": "_part_game_id", "play_id": "_part_play_id"})
+            part["_part_play_id"] = part["_part_play_id"].astype("float64")
+            part = part.drop_duplicates(subset=["_part_game_id", "_part_play_id"])
+            pbp = pbp.merge(part, left_on=["game_id", "play_id"], right_on=["_part_game_id", "_part_play_id"],
+                            how="left").drop(columns=["_part_game_id", "_part_play_id"])
+        for col in _PARTICIPATION_COLS.values():        # same schema whatever was available
+            if col not in pbp.columns:
+                pbp[col] = np.nan
     return pbp
 
 
