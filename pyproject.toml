@@ -23,6 +23,7 @@ dependencies = [
 
 [project.optional-dependencies]
 pbp = ["nflreadpy", "pyarrow"]
+api = ["fastapi", "uvicorn[standard]"]
 
 [project.scripts]
 ngs-scrape = "next_gen_scrapy.scrape:main"

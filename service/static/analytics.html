@@ -1,0 +1,1294 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>next-gen-scrapy analytics explorer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<style>
+  :root {
+    --page: #0e0f10; --panel: #17191b; --border: rgba(255,255,255,0.10);
+    --text: #f2f2f0; --text-2: #b9b8b0; --muted: #85847e; --accent: #1f5fd6;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--text);
+         font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 1.25rem 1.5rem 2rem; }
+  h1 { font-size: 1.25rem; margin: 0 0 0.2rem; }
+  .sub { color: var(--text-2); font-size: 0.88rem; margin: 0 0 1rem; }
+  a { color: inherit; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+           padding: 0.9rem 1rem; margin-bottom: 0.9rem; }
+  .row { display: flex; flex-wrap: wrap; gap: 0.7rem; align-items: end; }
+  label { display: block; font-size: 0.72rem; color: var(--text-2); margin-bottom: 0.25rem; }
+  input, select { font-size: 0.88rem; padding: 0.35rem 0.5rem; border-radius: 6px;
+                  border: 1px solid var(--border); background: var(--page); color: var(--text); }
+  input[type="number"] { width: 5.2rem; }
+  button { font-size: 0.85rem; padding: 0.42rem 0.9rem; border-radius: 6px; border: 1px solid var(--border);
+           background: var(--accent); color: white; cursor: pointer; }
+  button.secondary { background: var(--page); color: var(--text); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .toggle button { border: none; border-radius: 0; background: var(--page); color: var(--text); }
+  .toggle button.active { background: var(--accent); color: white; }
+  .status { font-size: 0.82rem; color: var(--text-2); margin-top: 0.6rem; }
+  .chip { background: var(--page); border: 1px solid var(--border); border-radius: 999px;
+          padding: 0.15rem 0.6rem; font-size: 0.8rem; display: inline-flex; gap: 0.4rem; align-items: center; }
+  .chip button { border: none; background: none; padding: 0; color: var(--muted); font-size: 0.9rem; }
+  .weeks { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+  .week-chips { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+  .week-chips button { min-width: 2.1rem; padding: 0.3rem 0.45rem; font-size: 0.8rem;
+                       background: var(--page); color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .week-chips button.on { background: var(--accent); color: white; border-color: var(--accent); }
+  .week-chips button.post { border-style: dashed; }
+  .week-chips .sep { width: 0.6rem; }
+  button.small { padding: 0.3rem 0.6rem; font-size: 0.78rem; }
+  .weeks-note { color: var(--muted); margin-left: 0.3rem; }
+
+  /* ask box */
+  .askrow { display: flex; gap: 0.5rem; }
+  .askrow input { flex: 1; font-size: 1rem; padding: 0.6rem 0.8rem; }
+  .askrow button { padding: 0.6rem 1.2rem; font-size: 0.95rem; }
+  .examples { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.55rem; }
+  .examples button { background: var(--page); color: var(--text-2); font-size: 0.76rem; padding: 0.25rem 0.6rem;
+                     border-radius: 999px; }
+  .examples button:hover { color: var(--text); }
+  .interp { margin-top: 0.75rem; font-size: 0.82rem; }
+  .interp-head { color: var(--text-2); margin-bottom: 0.35rem; }
+  .engine { font-size: 0.7rem; padding: 0.1rem 0.45rem; border-radius: 4px; background: rgba(255,255,255,0.08);
+            color: var(--text-2); margin-left: 0.35rem; }
+  .engine.llm { background: rgba(125,193,47,0.18); color: #b8e08a; }
+  .understood { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+  .understood span { background: var(--page); border: 1px solid var(--border); border-radius: 6px; padding: 0.2rem 0.5rem; }
+  .understood q { color: var(--text-2); quotes: "“" "”"; }
+  .interp .note { color: #e8c170; margin-top: 0.35rem; }
+
+  /* curated filters */
+  .filters { margin-top: 0.8rem; border-top: 1px solid var(--border); padding-top: 0.7rem; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 0.7rem; }
+  .tabs button { background: var(--page); color: var(--text-2); font-size: 0.8rem; padding: 0.3rem 0.7rem; }
+  .tabs button.on { background: rgba(31,95,214,0.25); color: var(--text); border-color: var(--accent); }
+  .tabs .count { background: var(--accent); color: white; border-radius: 999px; font-size: 0.68rem;
+                 padding: 0 0.4rem; margin-left: 0.35rem; }
+  .fgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 0.8rem 1.1rem; }
+  .fctl label { display: flex; gap: 0.4rem; align-items: baseline; }
+  .since { font-size: 0.65rem; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 0.3rem; }
+  .fhelp { font-size: 0.68rem; color: var(--muted); margin-top: 0.2rem; }
+  .seg { display: inline-flex; flex-wrap: wrap; gap: 0.2rem; }
+  .seg button { background: var(--page); color: var(--text-2); font-size: 0.78rem; padding: 0.28rem 0.55rem; }
+  .seg button.on { background: var(--accent); color: white; border-color: var(--accent); }
+  .range { display: flex; align-items: center; gap: 0.35rem; }
+  .range input { width: 6rem; }
+  .range span { color: var(--muted); font-size: 0.8rem; }
+  .activebar { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; margin-top: 0.8rem; }
+  .activebar:empty { display: none; }
+  .activebar .clear { background: none; border: none; color: var(--muted); font-size: 0.78rem; text-decoration: underline; }
+
+  .stage { position: relative; height: 680px; border-radius: 10px; overflow: hidden;
+           background: #000; border: 1px solid var(--border); }
+  #field { width: 100%; height: 100%; display: block; }
+  .legend { position: absolute; top: 12px; left: 14px; display: flex; flex-direction: column; gap: 0.35rem;
+            font-size: 0.78rem; color: #e8e8e4; background: rgba(0,0,0,0.55);
+            padding: 0.4rem 0.7rem; border-radius: 6px; }
+  .legend span { display: inline-flex; align-items: center; gap: 0.35rem; }
+  .legend i { width: 18px; height: 4px; border-radius: 2px; display: inline-block; }
+  .legend i.ring { width: 11px; height: 11px; border-radius: 50%; border: 3px solid #2f6bff; background: #0b1f5c; }
+  .legend .ramp { width: 160px; height: 10px; border-radius: 3px; margin: 0.15rem 0;
+                  background: linear-gradient(90deg, rgba(0,0,0,0.2), #5a0c06, #c82212, #ef5a1c, #f9a62d, #ffe880); }
+  .legend .ramp-labels { display: flex; justify-content: space-between; width: 160px; color: #9a9a94; font-size: 0.7rem; }
+  .heat-opt { display: none; }
+  body.heat .heat-opt { display: block; }
+  .hint { position: absolute; bottom: 10px; left: 14px; font-size: 0.72rem; color: #9a9a94; }
+  .tip { position: absolute; pointer-events: none; background: rgba(15,16,17,0.95); color: #f2f2f0;
+         border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; padding: 0.45rem 0.6rem;
+         font-size: 0.78rem; max-width: 340px; line-height: 1.4; display: none; }
+  .tip b { font-weight: 600; }
+  .tip .desc { color: #b9b8b0; margin-top: 0.2rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>next-gen-scrapy analytics explorer</h1>
+  <p class="sub">Every pass/route/carry matched to its real play-by-play + FTN row. <a href="/">API docs &amp; overview</a></p>
+
+  <div class="panel">
+    <form id="askForm" class="askrow">
+      <input id="askInput" type="search" autocomplete="off"
+             placeholder="Ask anything - e.g. &quot;Saquon runs on 3rd and short in the red zone, 2024&quot;">
+      <button type="submit" id="askBtn">Ask</button>
+    </form>
+    <div class="examples" id="examples"></div>
+    <div class="interp" id="interp" hidden></div>
+  </div>
+
+  <div class="panel">
+    <div class="row">
+      <div>
+        <label>Dataset</label>
+        <select id="dataset">
+          <option value="carries">Carries</option>
+          <option value="routes">Routes</option>
+          <option value="passes">Passes</option>
+        </select>
+      </div>
+      <div>
+        <label>View</label>
+        <div class="toggle">
+          <button id="btn3d" class="active">3D</button>
+          <button id="btn2d">2D</button>
+        </div>
+      </div>
+      <div>
+        <label>Show</label>
+        <div class="toggle">
+          <button id="btnPlays" class="active">Plays</button>
+          <button id="btnHeat">Heatmap</button>
+        </div>
+      </div>
+      <div class="heat-opt" id="heatModeBox">
+        <label>Heat of</label>
+        <select id="heatMode">
+          <option value="path">Whole path</option>
+          <option value="end">End point</option>
+        </select>
+      </div>
+      <div class="heat-opt">
+        <label>Smoothing</label>
+        <select id="heatSmooth">
+          <option value="0.75">Tight</option>
+          <option value="1.5" selected>Normal</option>
+          <option value="3">Smooth</option>
+        </select>
+      </div>
+      <div><label>Team</label><select id="f_team"><option value="">Any</option></select></div>
+      <div>
+        <label>Player</label>
+        <input type="search" id="f_name" list="playerList" value="Saquon Barkley" placeholder="Any player" style="width:12rem">
+        <datalist id="playerList"></datalist>
+      </div>
+      <div><label>Row limit</label><input type="number" id="f_limit" value="300" style="width:4.5rem"></div>
+      <div><button id="plotBtn">Plot</button></div>
+      <div><button class="secondary" id="csvBtn">Export CSV</button></div>
+    </div>
+    <div style="margin-top:0.7rem">
+      <label>Seasons <span class="weeks-note" id="seasonsNote"></span></label>
+      <div class="weeks">
+        <div id="seasonChips" class="week-chips"></div>
+        <button class="secondary small" id="seasonsAll">All</button>
+        <button class="secondary small" id="seasonsLatest">Latest</button>
+      </div>
+    </div>
+    <div style="margin-top:0.7rem">
+      <label>Weeks <span class="weeks-note" id="weeksNote"></span></label>
+      <div class="weeks">
+        <div id="weekChips" class="week-chips"></div>
+        <button class="secondary small" id="weeksAll">All</button>
+        <button class="secondary small" id="weeksReg">Reg season</button>
+        <button class="secondary small" id="weeksPost">Playoffs</button>
+      </div>
+    </div>
+    <div class="filters">
+      <div class="tabs" id="filterTabs"></div>
+      <div class="fgrid" id="filterGrid"></div>
+    </div>
+    <div class="activebar" id="activeBar"></div>
+    <div class="status" id="status">Ready.</div>
+  </div>
+
+  <div class="stage" id="stage">
+    <canvas id="field"></canvas>
+    <div class="legend" id="legend"></div>
+    <div class="hint" id="hint"></div>
+    <div class="tip" id="tip"></div>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+// ---------- field constants (yards) ----------
+const HALF_W = 160 / 6;          // 26.67 - sideline
+const BAND = 4.5;                // grey sideline band width
+const HASH = 18.5 / 6;           // 3.08 - NFL hashes from center
+const LIFT = 0.12;               // paths sit just above the turf
+
+const COLORS = {
+  turf: 0x2b2e31, turfLine: 0x4a4e52, turfLine5: 0x5c6166, band: 0x6e7175,
+  los: 0x1f4fe0, text: "#e9e9e6",
+};
+
+// NGS conventions per dataset
+const STYLE = {
+  carries: {
+    key: r => r.gain_class,
+    classes: { LONG: ["#7dc12f", "5+ yds"], SHORT: ["#f2c318", "0-5 yds"], LOSS: ["#e5322d", "loss"] },
+  },
+  routes: {
+    key: r => r.route_type,
+    classes: { COMPLETE: ["#f4f4f2", "complete"], INCOMPLETE: ["#8c8f93", "incomplete"] },
+  },
+  passes: {
+    key: r => (r.pass_type === "TOUCHDOWN" ? "COMPLETE" : r.pass_type),
+    classes: { COMPLETE: ["#f4f4f2", "complete"], INCOMPLETE: ["#8c8f93", "incomplete"],
+               INTERCEPTION: ["#e5322d", "interception"] },
+  },
+};
+
+// ---------- renderer / scene ----------
+const canvas = document.getElementById("field");
+const stage = document.getElementById("stage");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x000000);
+
+scene.add(new THREE.AmbientLight(0xffffff, 1.4));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.position.set(-20, 60, 30);
+scene.add(sun);
+
+const fieldGroup = new THREE.Group();
+const playGroup = new THREE.Group();
+scene.add(fieldGroup, playGroup);
+
+// field coords (x, y=yards past LOS) -> three coords (x, up, -y)
+const P = (x, y, h = 0) => new THREE.Vector3(x, h, -y);
+
+let is3D = true;
+let yMin = -15, yMax = 40;
+let camera, controls;
+
+function textSprite(text, { size = 2.2, color = COLORS.text, weight = 600 } = {}) {
+  const c = document.createElement("canvas");
+  const ctx = c.getContext("2d");
+  const fontPx = 96;
+  ctx.font = `${weight} ${fontPx}px system-ui, -apple-system, sans-serif`;
+  const w = Math.ceil(ctx.measureText(text).width) + 16;
+  c.width = w; c.height = fontPx + 24;
+  ctx.font = `${weight} ${fontPx}px system-ui, -apple-system, sans-serif`;
+  ctx.fillStyle = color; ctx.textBaseline = "middle";
+  ctx.fillText(text, 8, c.height / 2);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true });
+  const s = new THREE.Sprite(mat);
+  s.scale.set(size * (c.width / c.height), size, 1);
+  s.renderOrder = 10;
+  return s;
+}
+
+function lineSeg(points, color, opacity = 1) {
+  const g = new THREE.BufferGeometry().setFromPoints(points);
+  const m = new THREE.LineBasicMaterial({ color, transparent: opacity < 1, opacity });
+  return new THREE.Line(g, m);
+}
+
+function disposeGroup(g) {
+  g.traverse(o => {
+    if (o.geometry) o.geometry.dispose();
+    if (o.material) {
+      (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => { m.map?.dispose(); m.dispose(); });
+    }
+  });
+  g.clear();
+}
+
+function buildField() {
+  disposeGroup(fieldGroup);
+  const len = yMax - yMin;
+  const midY = (yMax + yMin) / 2;
+
+  // turf
+  const turf = new THREE.Mesh(
+    new THREE.PlaneGeometry(HALF_W * 2, len),
+    new THREE.MeshStandardMaterial({ color: COLORS.turf, roughness: 0.95 }),
+  );
+  turf.rotation.x = -Math.PI / 2;
+  turf.position.copy(P(0, midY));
+  fieldGroup.add(turf);
+
+  // sideline bands
+  for (const side of [-1, 1]) {
+    const band = new THREE.Mesh(
+      new THREE.PlaneGeometry(BAND, len),
+      new THREE.MeshStandardMaterial({ color: COLORS.band, roughness: 0.9 }),
+    );
+    band.rotation.x = -Math.PI / 2;
+    band.position.copy(P(side * (HALF_W + BAND / 2), midY, 0.01));
+    fieldGroup.add(band);
+  }
+
+  const first = Math.ceil(yMin / 5) * 5;
+  for (let y = first; y <= yMax; y += 5) {
+    if (y === 0) continue;
+    const major = y % 10 === 0;
+    fieldGroup.add(lineSeg([P(-HALF_W, y, 0.02), P(HALF_W, y, 0.02)],
+                           major ? COLORS.turfLine5 : COLORS.turfLine));
+    if (major && y > 0) {
+      for (const side of [-1, 1]) {
+        const s = textSprite(`+${y}`, { size: 1.9 });
+        s.position.copy(P(side * (HALF_W + BAND / 2), y, 0.6));
+        fieldGroup.add(s);
+      }
+    }
+  }
+
+  // 1-yard ticks: along both hash lines and just inside each sideline
+  const ticks = [];
+  for (let y = Math.ceil(yMin); y <= yMax; y++) {
+    if (y % 5 === 0) continue;
+    for (const cx of [-HASH, HASH]) ticks.push(P(cx - 0.35, y, 0.02), P(cx + 0.35, y, 0.02));
+    for (const side of [-1, 1]) {
+      const edge = side * HALF_W;
+      ticks.push(P(edge - side * 0.9, y, 0.02), P(edge, y, 0.02));
+      ticks.push(P(edge + side * 0.4, y, 0.03), P(edge + side * 1.3, y, 0.03));
+    }
+  }
+  const tg = new THREE.BufferGeometry().setFromPoints(ticks);
+  fieldGroup.add(new THREE.LineSegments(tg, new THREE.LineBasicMaterial({ color: 0x8a8e92 })));
+
+  // line of scrimmage
+  const los = new THREE.Mesh(
+    new THREE.BoxGeometry(HALF_W * 2 + BAND * 2, 0.08, 0.55),
+    new THREE.MeshStandardMaterial({ color: COLORS.los, emissive: 0x0a2a90, roughness: 0.6 }),
+  );
+  los.position.copy(P(0, 0, 0.05));
+  fieldGroup.add(los);
+  for (const side of [-1, 1]) {
+    const s = textSprite("LOS", { size: 1.9 });
+    s.position.copy(P(side * (HALF_W + BAND / 2), 1.6, 0.6));
+    fieldGroup.add(s);
+  }
+}
+
+// ---------- cameras ----------
+function setupCamera() {
+  const w = stage.clientWidth, h = stage.clientHeight, aspect = w / h;
+  controls?.dispose();
+
+  if (is3D) {
+    camera = new THREE.PerspectiveCamera(38, aspect, 0.5, 2000);
+    const viewTop = Math.min(yMax, 75);
+    const depth = viewTop - yMin;
+    // frame the field width at the LOS, not the full depth, so deep charts don't shrink the field
+    const reach = Math.max(depth * 0.6, 48);
+    const target = P(0, yMin + depth * 0.42);
+    camera.position.copy(P(0, yMin - reach * 0.5, reach * 0.75));
+    camera.lookAt(target);
+    controls = new OrbitControls(camera, canvas);
+    controls.target.copy(target);
+    controls.maxPolarAngle = Math.PI / 2 - 0.05;
+    controls.enableDamping = true;
+  } else {
+    // fit the whole field (sidelines included) into the viewport, top-down
+    const fw = (HALF_W + BAND) * 2 + 6, fh = (yMax - yMin) + 8;
+    let vw, vh;
+    if (fw / fh > aspect) { vw = fw; vh = fw / aspect; } else { vh = fh; vw = fh * aspect; }
+    camera = new THREE.OrthographicCamera(-vw / 2, vw / 2, vh / 2, -vh / 2, 0.1, 500);
+    const c = P(0, (yMin + yMax) / 2);
+    camera.position.set(c.x, 100, c.z);
+    camera.up.set(0, 0, -1);
+    camera.lookAt(c);
+    controls = new OrbitControls(camera, canvas);
+    controls.target.copy(c);
+    controls.enableRotate = false;
+    controls.screenSpacePanning = true;
+  }
+  controls.update();
+  document.getElementById("hint").textContent = is3D
+    ? "drag to orbit · right-drag to pan · scroll to zoom"
+    : "drag to pan · scroll to zoom";
+}
+
+function resize() {
+  const w = stage.clientWidth, h = stage.clientHeight;
+  renderer.setSize(w, h, false);
+  setupCamera();
+}
+window.addEventListener("resize", resize);
+
+// ---------- plays ----------
+const hoverables = [];
+const YAC_COLOR = "#7dc12f";
+
+// every mesh that belongs to a play (route line, YAC segment, catch dot, TD marker, ...) is hoverable
+// and remembers its own glow, so highlighting a play can light all its pieces and restore them after
+function hoverable(mesh, r) {
+  mesh.userData.row = r;
+  mesh.userData.baseEmissive = mesh.material.emissive ? mesh.material.emissive.getHex() : 0;
+  hoverables.push(mesh);
+  return mesh;
+}
+
+function highlightRow(r, on) {
+  hoverables.forEach(m => {
+    if (m.userData.row === r && m.material.emissive)
+      m.material.emissive.setHex(on ? 0x444444 : m.userData.baseEmissive);
+  });
+}
+
+let showTdLabels = true;
+
+function tdMarker(x, y, r) {
+  const g = new THREE.Group();
+  const disc = new THREE.Mesh(
+    new THREE.CylinderGeometry(1.0, 1.0, 0.35, 40),
+    new THREE.MeshStandardMaterial({ color: 0x0b1f5c, roughness: 0.5 }),
+  );
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(0.72, 0.16, 12, 40),
+    new THREE.MeshStandardMaterial({ color: 0x2f6bff, emissive: 0x0b2aa0 }),
+  );
+  ring.rotation.x = Math.PI / 2;
+  ring.position.y = 0.2;
+  const dot = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.25, 0.25, 0.4, 20),
+    new THREE.MeshStandardMaterial({ color: 0x7fa6ff, emissive: 0x1a3ec0 }),
+  );
+  if (r) [disc, ring, dot].forEach(m => hoverable(m, r));
+  g.add(disc, ring, dot);
+  g.position.copy(P(x, y, 0.3 + playGroup.children.length * 0.0005));
+  playGroup.add(g);
+  if (showTdLabels) {
+    const label = textSprite("TD", { size: 2.0, color: "#ffffff", weight: 700 });
+    label.position.copy(P(x + 2.4, y + 1.2, 1.4));
+    playGroup.add(label);
+  }
+}
+
+function catchIndex(r) {
+  const seg = r.path_segment;
+  if (!seg) return r.path_x.length - 1;
+  let last = 0;
+  seg.forEach((s, i) => { if (s !== "after_catch") last = i; });
+  return last;
+}
+
+function tube(r, pts, color) {
+  if (pts.length < 2) return;
+  const curve = new THREE.CatmullRomCurve3(pts, false, "centripetal");
+  const mesh = new THREE.Mesh(
+    new THREE.TubeGeometry(curve, Math.min(400, pts.length * 3), 0.22, 8, false),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0.05 }),
+  );
+  playGroup.add(hoverable(mesh, r));
+}
+
+function addPath(r, color) {
+  const pts = r.path_x.map((x, i) => P(x, r.path_y[i], LIFT + 0.2));
+  tube(r, pts, color);
+}
+
+// a route: the route itself in its complete/incomplete colour, then the run after the catch in green
+function addRoute(r, color) {
+  const pts = r.path_x.map((x, i) => P(x, r.path_y[i], LIFT + 0.2));
+  const ci = catchIndex(r);
+  const hasYac = ci < pts.length - 1;
+  tube(r, pts.slice(0, ci + 1), color);
+  if (hasYac) tube(r, pts.slice(ci), YAC_COLOR);
+  return { ci, hasYac };
+}
+
+function catchDot(r, x, y) {
+  const disc = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.62, 0.62, 0.3, 28),
+    new THREE.MeshStandardMaterial({ color: 0xf4f4f2, roughness: 0.4 }),
+  );
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(0.62, 0.14, 10, 32),
+    new THREE.MeshStandardMaterial({ color: YAC_COLOR, roughness: 0.4 }),
+  );
+  ring.rotation.x = Math.PI / 2;
+  ring.position.y = 0.15;
+  const g = new THREE.Group();
+  g.add(hoverable(disc, r), hoverable(ring, r));
+  g.position.copy(P(x, y, LIFT + 0.35 + hoverables.length * 0.0005));
+  playGroup.add(g);
+}
+
+function addPoint(r, color) {
+  const mesh = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.75, 0.75, 0.3, 28),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.5 }),
+  );
+  // tiny per-disc height offset so overlapping discs don't z-fight
+  mesh.position.copy(P(r.x_coord, r.y_coord, 0.2 + hoverables.length * 0.0005));
+  playGroup.add(hoverable(mesh, r));
+}
+
+function renderLegend(dataset, counts) {
+  const st = STYLE[dataset];
+  const el = document.getElementById("legend");
+  el.innerHTML = "";
+  Object.entries(st.classes).forEach(([k, [color, label]]) => {
+    if (!counts[k]) return;
+    const s = document.createElement("span");
+    s.innerHTML = `<i style="background:${color}"></i>${label} (${counts[k]})`;
+    el.appendChild(s);
+  });
+  if (counts.YAC) {
+    const s = document.createElement("span");
+    s.innerHTML = `<i style="background:${YAC_COLOR}"></i>yards after catch`;
+    el.appendChild(s);
+  }
+  if (counts.CATCH) {
+    const s = document.createElement("span");
+    s.innerHTML = `<i class="ring" style="border-color:${YAC_COLOR};background:#f4f4f2"></i>catch point (${counts.CATCH})`;
+    el.appendChild(s);
+  }
+  if (counts.TD) {
+    const s = document.createElement("span");
+    s.innerHTML = `<i class="ring"></i>touchdown (${counts.TD})`;
+    el.appendChild(s);
+  }
+}
+
+function drawPlays(dataset, rows) {
+  disposeGroup(playGroup);
+  hoverables.length = 0;
+  const st = STYLE[dataset];
+  const counts = {};
+
+  // fit depth to the data, NGS-style (always show at least +40)
+  let lo = -8, hi = 20;
+  rows.forEach(r => {
+    const ys = r.path_y || [r.y_coord];
+    ys.forEach(y => { if (y != null) { lo = Math.min(lo, y); hi = Math.max(hi, y); } });
+  });
+  yMin = Math.floor((lo - 4) / 5) * 5;
+  yMax = Math.max(40, Math.ceil((hi + 6) / 10) * 10);
+  buildField();
+  showTdLabels = rows.filter(r => r.bucket === "TOUCHDOWN" || r.pass_type === "TOUCHDOWN").length <= 6;
+
+  rows.forEach(r => {
+    const k = st.key(r);
+    const [color] = st.classes[k] || ["#cccccc"];
+    counts[k] = (counts[k] || 0) + 1;
+    const td = r.bucket === "TOUCHDOWN" || r.pass_type === "TOUCHDOWN";
+
+    if (dataset === "passes") {
+      if (r.x_coord == null) return;
+      if (td) { tdMarker(r.x_coord, r.y_coord, r); counts.TD = (counts.TD || 0) + 1; }
+      else addPoint(r, color);
+      return;
+    }
+    if (!r.path_x) return;
+    if (dataset === "routes") {
+      const { ci, hasYac } = addRoute(r, color);
+      if (hasYac) counts.YAC = 1;
+      if (td) {
+        tdMarker(r.path_x[ci], r.path_y[ci], r);
+        counts.TD = (counts.TD || 0) + 1;
+      } else if (r.route_type === "COMPLETE") {
+        catchDot(r, r.path_x[ci], r.path_y[ci]);
+        counts.CATCH = (counts.CATCH || 0) + 1;
+      }
+      return;
+    }
+    addPath(r, color);
+    if (td) {
+      const i = r.path_x.length - 1;
+      tdMarker(r.path_x[i], r.path_y[i], r);
+      counts.TD = (counts.TD || 0) + 1;
+    }
+  });
+  renderLegend(dataset, counts);
+  setupCamera();
+}
+
+// ---------- heatmap ----------
+const HEAT_RAMP = [   // black -> dark red -> red -> orange -> amber -> pale yellow
+  [0.00, [0, 0, 0]], [0.15, [90, 12, 6]], [0.40, [200, 34, 18]],
+  [0.65, [239, 90, 28]], [0.85, [249, 166, 45]], [1.00, [255, 232, 128]],
+];
+const HEAT_HEIGHT = 12;        // yards of height at the peak, 3D only
+let heatData = null, heatMesh = null;
+
+function heatColor(v) {
+  for (let k = 1; k < HEAT_RAMP.length; k++) {
+    const [t1, c1] = HEAT_RAMP[k], [t0, c0] = HEAT_RAMP[k - 1];
+    if (v <= t1) {
+      const f = (v - t0) / (t1 - t0);
+      return c0.map((c, i) => (c + (c1[i] - c) * f) / 255);
+    }
+  }
+  return HEAT_RAMP.at(-1)[1].map(c => c / 255);
+}
+
+function drawHeat(d, dataset) {
+  heatData = d;
+  disposeGroup(playGroup);
+  hoverables.length = 0;
+  heatMesh = null;
+  const top = d.y0 + d.ny * d.cell;
+  yMin = Math.floor(d.y0 / 5) * 5;
+  yMax = Math.max(40, Math.ceil(top / 10) * 10);
+  buildField();
+  renderHeatLegend(d, dataset);
+  if (!d.n_plays) { setupCamera(); return; }
+
+  const { nx, ny, cell, x0, y0, grid } = d;
+  const pos = new Float32Array(nx * ny * 3), col = new Float32Array(nx * ny * 4);
+  const h = is3D ? HEAT_HEIGHT : 0;
+  // 2D: just above the turf but under the yard lines / LOS so those stay readable
+  const base = is3D ? 0.15 : 0.006;
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      const v = grid[j][i], k = j * nx + i;
+      const p = P(x0 + (i + 0.5) * cell, y0 + (j + 0.5) * cell, base + v * h);
+      pos.set([p.x, p.y, p.z], k * 3);
+    }
+  }
+  // triangles drawn far-to-near so the translucent surface blends correctly from the default camera
+  const idx = [];
+  for (let j = ny - 2; j >= 0; j--) {
+    for (let i = 0; i < nx - 1; i++) {
+      const a = j * nx + i, b = a + 1, c = a + nx, e = c + 1;
+      idx.push(a, c, b, b, c, e);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+
+  // Colour + shading are baked into the vertex colours (unlit material) so the ramp stays vivid
+  // instead of being washed out by the scene lights. Vertex colours are linear -> convert from sRGB.
+  const nrm = geo.getAttribute("normal");
+  const L = new THREE.Vector3(-0.45, 0.8, 0.4).normalize();
+  const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+  for (let k = 0; k < nx * ny; k++) {
+    const v = grid[Math.floor(k / nx)][k % nx];
+    const lit = is3D ? 0.5 + 0.5 * Math.max(0, nrm.getX(k) * L.x + nrm.getY(k) * L.y + nrm.getZ(k) * L.z) : 1;
+    const [r, g, b] = heatColor(v).map(c => Math.pow(c, 2.2) * lit);
+    col.set([r, g, b, smooth(0.015, 0.2, v) * 0.97], k * 4);   // near-zero floor fades out
+  }
+  geo.setAttribute("color", new THREE.BufferAttribute(col, 4));
+  heatMesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+    vertexColors: true, transparent: true, side: THREE.DoubleSide, depthWrite: false,
+  }));
+  heatMesh.renderOrder = 5;
+  playGroup.add(heatMesh);
+  setupCamera();
+}
+
+function renderHeatLegend(d, dataset) {
+  const what = dataset === "passes" ? "pass locations"
+    : d.mode === "end" ? (dataset === "routes" ? "catch points" : "where the carry ended")
+    : (dataset === "routes" ? "route paths" : "carry paths");
+  $("legend").innerHTML = d.n_plays
+    ? `<span>Heat of ${esc(what)}</span><div class="ramp"></div>
+       <div class="ramp-labels"><span>fewer</span><span>more</span></div>
+       <span style="color:#9a9a94">${d.n_plays.toLocaleString()} ${esc(dataset)} · every matching play</span>`
+    : `<span>No ${esc(dataset)} match these filters.</span>`;
+}
+
+// ---------- hover tooltip ----------
+const ray = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+const tip = document.getElementById("tip");
+let hovered = null;
+
+function fmt(v, d = 2) { return v == null ? "n/a" : (typeof v === "number" ? v.toFixed(d) : v); }
+
+// where the chart draws this play vs what pbp / NGS say, and how sure the match is
+function measureLines(r) {
+  const muted = s => `<span style="color:#9a9a94">${s}</span>`;
+  const signed = v => (v > 0 ? "+" : "") + v.toFixed(1);
+  let line = "";
+  if (r.kind === "carry") {
+    if (r.y_coord != null)
+      line = `Drawn to <b>${signed(r.y_coord)}</b> yds · pbp gain <b>${fmt(r.yards_gained, 0)}</b>`;
+  } else {
+    const drawn = r.kind === "route" && r.path_y ? r.path_y[catchIndex(r)] : r.y_coord;
+    if (drawn != null)
+      line = `Drawn at <b>${signed(drawn)}</b> yds · pbp air <b>${r.air_yards != null ? fmt(r.air_yards, 0) : "n/a"}</b>` +
+        (r.ngs_air_yards != null ? muted(` · NGS ${fmt(r.ngs_air_yards, 1)}`) : "") +
+        (r.yards_after_catch != null && r.complete_pass === 1 ? ` · YAC ${fmt(r.yards_after_catch, 0)}` : "");
+  }
+  let match = "";
+  if (r.location_prob != null) {
+    const p = Math.round(r.location_prob * 100);
+    const color = p >= 95 ? "#7dc12f" : p >= 80 ? "#e8c170" : "#e5322d";
+    const cands = r.n_candidates === 1 ? "only candidate - certain"
+      : `${r.n_candidates} candidate plays`;
+    match = `Match: <b style="color:${color}">${p}%</b> location confidence · ${muted(cands)}`;
+  }
+  return (line ? `<br>${line}` : "") + (match ? `<br>${match}` : "");
+}
+
+canvas.addEventListener("pointermove", e => {
+  const rect = canvas.getBoundingClientRect();
+  mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  ray.setFromCamera(mouse, camera);
+  if (plotMode === "heat") {
+    const h = heatMesh && ray.intersectObject(heatMesh, false)[0];
+    if (!h) { tip.style.display = "none"; return; }
+    const fx = h.point.x, fy = -h.point.z, d = heatData;
+    const i = Math.floor((fx - d.x0) / d.cell), j = Math.floor((fy - d.y0) / d.cell);
+    const v = d.grid[j]?.[i] ?? 0;
+    const side = Math.abs(fx) < 1 ? "middle of the field" : `${Math.abs(fx).toFixed(0)} yds ${fx < 0 ? "left" : "right"} of center`;
+    tip.innerHTML = `<b>${fy >= 0 ? "+" : ""}${fy.toFixed(0)} yds</b> from the LOS · ${side}<br>` +
+      `${(v * d.max * 100).toFixed(2)}% of plays per sq yd <span style="color:#9a9a94">(${Math.round(v * 100)}% of peak)</span>`;
+    tip.style.display = "block";
+    const r2 = stage.getBoundingClientRect();
+    tip.style.left = Math.min(e.clientX - r2.left + 14, stage.clientWidth - 350) + "px";
+    tip.style.top = Math.min(e.clientY - r2.top + 14, stage.clientHeight - 80) + "px";
+    return;
+  }
+  const hit = ray.intersectObjects(hoverables, false)[0];
+  const hitRow = hit?.object.userData.row;
+  if (hovered && hovered !== hitRow) { highlightRow(hovered, false); hovered = null; }
+  if (!hit) { tip.style.display = "none"; return; }
+  if (hovered !== hitRow) { hovered = hitRow; highlightRow(hovered, true); }
+  const r = hitRow;
+  const down = r.down ? `${r.down}&${r.ydstogo}` : "";
+  tip.innerHTML =
+    `<b>${esc(r.name)}</b> · ${esc(r.team)} · wk ${esc(r.week)} ${esc(r.season)}<br>` +
+    `Q${esc(r.qtr ?? "?")} ${esc(down)} · ${fmt(r.yards_gained, 0)} yds · EPA ${fmt(r.epa)}` +
+    measureLines(r) +
+    (r.bucket === "TOUCHDOWN" ? ` · <b style="color:#7fa6ff">TD</b>` : "") +
+    (r.desc ? `<div class="desc">${esc(r.desc)}</div>` : "");
+  tip.style.display = "block";
+  const x = e.clientX - stage.getBoundingClientRect().left + 14;
+  const y = e.clientY - stage.getBoundingClientRect().top + 14;
+  tip.style.left = Math.min(x, stage.clientWidth - 350) + "px";
+  tip.style.top = Math.min(y, stage.clientHeight - 110) + "px";
+});
+canvas.addEventListener("pointerleave", () => {
+  tip.style.display = "none";
+  if (hovered) { highlightRow(hovered, false); hovered = null; }
+});
+
+// ---------- data / controls ----------
+const $ = id => document.getElementById(id);
+const setStatus = m => { $("status").textContent = m; };
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// ---------- curated filters ----------
+let spec = { groups: [], filters: [] };
+let params = {};                    // API filter params, e.g. { down__in: "3", ydstogo__lte: "2" }
+let activeGroup = "Situation";
+const OP_SYM = { "": "=", in: "=", gte: "≥", lte: "≤", gt: ">", lt: "<", ne: "≠" };
+const colOf = k => k.split("__")[0];
+const opOf = k => (k.includes("__") ? k.split("__")[1] : "");
+const specOf = col => spec.filters.find(f => f.col === col);
+const num = v => (v == null ? "" : +(+v).toFixed(2));
+
+function describe(key, value) {
+  const f = specOf(colOf(key));
+  if (!f) return `${key} = ${value}`;
+  if (f.kind === "bool") return `${f.label}: ${value === "true" ? "yes" : "no"}`;
+  const labels = Object.fromEntries((f.choices || []).map(([v, l]) => [String(v), l]));
+  const shown = String(value).split(",").map(v => labels[v] ?? v).join(", ");
+  const op = opOf(key);
+  return op === "" || op === "in" ? `${f.label}: ${shown}` : `${f.label} ${OP_SYM[op]} ${shown}`;
+}
+
+async function loadSpec(dataset) {
+  spec = await (await fetch(`/filters?dataset=${dataset}`)).json();
+  const valid = new Set(spec.filters.map(f => f.col));
+  for (const k of Object.keys(params)) if (!valid.has(colOf(k))) delete params[k];
+  const groups = spec.groups.filter(g => spec.filters.some(f => f.group === g));
+  if (!groups.includes(activeGroup)) activeGroup = groups[0];
+  renderFilters();
+}
+
+function filtersChanged() {
+  renderFilters();
+  schedulePlot();
+}
+
+function renderFilters() {
+  const tabs = $("filterTabs");
+  tabs.innerHTML = "";
+  spec.groups.filter(g => spec.filters.some(f => f.group === g)).forEach(g => {
+    const n = Object.keys(params).filter(k => specOf(colOf(k))?.group === g).length;
+    const b = document.createElement("button");
+    b.className = g === activeGroup ? "on" : "";
+    b.innerHTML = esc(g) + (n ? `<span class="count">${n}</span>` : "");
+    b.onclick = () => { activeGroup = g; renderFilters(); };
+    tabs.appendChild(b);
+  });
+  const grid = $("filterGrid");
+  grid.innerHTML = "";
+  spec.filters.filter(f => f.group === activeGroup).forEach(f => grid.appendChild(control(f)));
+  renderActive();
+}
+
+function control(f) {
+  const box = document.createElement("div");
+  box.className = "fctl";
+  box.innerHTML = `<label>${esc(f.label)}${f.since ? `<span class="since" title="FTN charting data only exists from 2022">${esc(f.since)}</span>` : ""}</label>`;
+  const col = f.col;
+
+  if (f.kind === "choice") {
+    const cur = new Set((params[col + "__in"] || params[col] || "").split(",").filter(Boolean));
+    const seg = document.createElement("div");
+    seg.className = "seg";
+    f.choices.forEach(([v, label]) => {
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.className = cur.has(String(v)) ? "on" : "";
+      b.onclick = () => {
+        cur.has(String(v)) ? cur.delete(String(v)) : cur.add(String(v));
+        delete params[col]; delete params[col + "__ne"];
+        if (cur.size) params[col + "__in"] = [...cur].join(","); else delete params[col + "__in"];
+        filtersChanged();
+      };
+      seg.appendChild(b);
+    });
+    box.appendChild(seg);
+  } else if (f.kind === "bool") {
+    const seg = document.createElement("div");
+    seg.className = "seg";
+    [["", "Any"], ["true", "Yes"], ["false", "No"]].forEach(([v, label]) => {
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.className = (params[col] || "") === v ? "on" : "";
+      b.onclick = () => { if (v) params[col] = v; else delete params[col]; filtersChanged(); };
+      seg.appendChild(b);
+    });
+    box.appendChild(seg);
+  } else if (f.kind === "select") {
+    const sel = document.createElement("select");
+    sel.innerHTML = `<option value="">Any</option>` +
+      f.choices.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("");
+    sel.value = params[col] || "";
+    sel.onchange = () => { if (sel.value) params[col] = sel.value; else delete params[col]; filtersChanged(); };
+    box.appendChild(sel);
+  } else {  // range
+    const wrap = document.createElement("div");
+    wrap.className = "range";
+    const lo = params[col + "__gte"] ?? params[col + "__gt"] ?? params[col] ?? "";
+    const hi = params[col + "__lte"] ?? params[col + "__lt"] ?? params[col] ?? "";
+    const mk = (val, ph) => {
+      const i = document.createElement("input");
+      i.type = "number"; i.step = f.step || 1; i.value = val; i.placeholder = ph;
+      return i;
+    };
+    const iLo = mk(lo, `min ${num(f.min)}`), iHi = mk(hi, `max ${num(f.max)}`);
+    const commit = () => {
+      ["", "__gt", "__lt", "__gte", "__lte", "__ne"].forEach(s => delete params[col + s]);
+      if (iLo.value !== "" && iLo.value === iHi.value) params[col] = iLo.value;
+      else {
+        if (iLo.value !== "") params[col + "__gte"] = iLo.value;
+        if (iHi.value !== "") params[col + "__lte"] = iHi.value;
+      }
+      filtersChanged();
+    };
+    iLo.onchange = commit; iHi.onchange = commit;
+    wrap.append(iLo, Object.assign(document.createElement("span"), { textContent: "to" }), iHi);
+    box.appendChild(wrap);
+  }
+  if (f.help) box.insertAdjacentHTML("beforeend", `<div class="fhelp">${esc(f.help)}</div>`);
+  return box;
+}
+
+function renderActive() {
+  const bar = $("activeBar");
+  bar.innerHTML = "";
+  const keys = Object.keys(params);
+  keys.forEach(k => {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.textContent = describe(k, params[k]) + " ";
+    const x = document.createElement("button");
+    x.textContent = "✕";
+    x.title = "remove";
+    x.onclick = () => { delete params[k]; filtersChanged(); };
+    chip.appendChild(x);
+    bar.appendChild(chip);
+  });
+  if (keys.length) {
+    const c = document.createElement("button");
+    c.className = "clear";
+    c.textContent = "Clear all filters";
+    c.onclick = () => { params = {}; filtersChanged(); };
+    bar.appendChild(c);
+  }
+}
+
+// ---------- team / player pickers ----------
+async function loadTeams() {
+  const data = await (await fetch(`/${$("dataset").value}/distinct?columns=team`)).json();
+  const cur = $("f_team").value;
+  $("f_team").innerHTML = `<option value="">Any</option>` +
+    data.values.map(([t]) => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
+  $("f_team").value = cur;
+}
+
+async function loadPlayers() {
+  const p = new URLSearchParams({ columns: "name" });
+  if (selectedSeasons.size) p.set("season__in", seasonsParam());
+  const data = await (await fetch(`/${$("dataset").value}/distinct?${p}`)).json();
+  $("playerList").innerHTML = data.values.map(([n]) => `<option value="${esc(n)}">`).join("");
+}
+
+function buildQuery(forExport) {
+  const p = new URLSearchParams();
+  const v = id => $(id).value.trim();
+  if (selectedSeasons.size) p.set("season__in", seasonsParam());
+  if (selectedWeeks.size) p.set("week__in", [...selectedWeeks].sort((a, b) => a - b).join(","));
+  if (v("f_team")) p.set("team", v("f_team"));
+  if (v("f_name")) p.set("name", v("f_name"));
+  Object.entries(params).forEach(([k, val]) => p.set(k, val));
+  if (forExport) p.set("format", "csv");
+  else p.set("limit", v("f_limit") || "300");
+  return p.toString();
+}
+
+// every plot updates the address bar, so any view can be shared as a link
+function syncUrl() {
+  const p = new URLSearchParams();
+  p.set("dataset", $("dataset").value);
+  if (!is3D) p.set("view", "2d");
+  if (plotMode === "heat") {
+    p.set("plot", "heat");
+    p.set("heat", $("heatMode").value);
+    p.set("smooth", $("heatSmooth").value);
+  }
+  p.set("seasons", seasonsParam());
+  p.set("weeks", [...selectedWeeks].sort((a, b) => a - b).join(","));
+  if ($("f_team").value) p.set("team", $("f_team").value);
+  if ($("f_name").value) p.set("name", $("f_name").value);
+  Object.entries(params).forEach(([k, v]) => p.set(k, v));
+  history.replaceState(null, "", "?" + p.toString());
+}
+
+// ---------- natural-language questions ----------
+const EXAMPLES = [
+  "Saquon runs on 3rd and short in the red zone, 2024",
+  "Josh Allen deep passes vs the Chiefs in the 4th quarter",
+  "Justin Jefferson catches on play action, 2023 weeks 1-5",
+  "Derrick Henry 10+ yard runs against a stacked box",
+  "CeeDee Lamb routes when they were getting blown out late",
+];
+EXAMPLES.forEach(q => {
+  const b = document.createElement("button");
+  b.textContent = q;
+  b.onclick = () => { $("askInput").value = q; askQuestion(q); };
+  $("examples").appendChild(b);
+});
+
+function renderInterp(d) {
+  const box = $("interp");
+  box.hidden = false;
+  const llm = d.engine.includes("Gemini") && !d.engine.includes("unavailable");
+  box.innerHTML =
+    `<div class="interp-head">Understood as<span class="engine ${llm ? "llm" : ""}">${esc(d.engine)}</span></div>` +
+    `<div class="understood">` +
+    (d.understood.length
+      ? d.understood.map(u => `<span>${u.text === "Gemini" ? "" : `<q>${esc(u.text)}</q> → `}${esc(u.meaning)}</span>`).join("")
+      : `<span>nothing specific - showing the current view</span>`) +
+    `</div>` +
+    d.notes.map(n => `<div class="note">${esc(n)}</div>`).join("") +
+    (d.ignored.length ? `<div class="note">Not understood: ${esc(d.ignored.join(", "))}</div>` : "");
+}
+
+async function askQuestion(q) {
+  q = q.trim();
+  if (!q) return;
+  $("askBtn").disabled = true;
+  $("interp").hidden = false;
+  $("interp").innerHTML = `<div class="interp-head">Reading your question…</div>`;
+  try {
+    const res = await fetch(`/ask?${new URLSearchParams({ q, dataset: $("dataset").value })}`);
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+    const d = await res.json();
+    $("dataset").value = d.dataset;
+    if (d.all_seasons) selectedSeasons.clear();
+    if (d.seasons.length) { selectedSeasons.clear(); d.seasons.forEach(s => selectedSeasons.add(s)); }
+    params = { ...d.params };
+    selectedWeeks.clear();
+    d.weeks.forEach(w => selectedWeeks.add(w));
+    await loadSpec(d.dataset);
+    await Promise.all([loadTeams(), loadSeasons()]);
+    $("f_team").value = d.team || "";
+    $("f_name").value = d.name || "";
+    await Promise.all([loadWeeks(), loadPlayers()]);
+    renderInterp(d);
+    await plot();
+  } catch (e) {
+    $("interp").innerHTML = `<div class="note">Couldn't read that question: ${esc(e.message)}</div>`;
+  } finally {
+    $("askBtn").disabled = false;
+  }
+}
+$("askForm").onsubmit = e => { e.preventDefault(); askQuestion($("askInput").value); };
+
+// ---------- season chips ----------
+let availableSeasons = [];
+const selectedSeasons = new Set();  // empty = every season
+let lastClickedSeason = null;
+let plotTimer = null;
+const schedulePlot = () => { clearTimeout(plotTimer); plotTimer = setTimeout(plot, 350); };
+const seasonsParam = () => [...selectedSeasons].sort((a, b) => a - b).join(",");
+
+async function loadSeasons() {
+  try {
+    const data = await (await fetch(`/${$("dataset").value}/distinct?columns=season`)).json();
+    availableSeasons = data.values.map(([s]) => s).filter(s => s != null).sort((a, b) => a - b);
+  } catch { availableSeasons = []; }
+  for (const s of [...selectedSeasons]) if (!availableSeasons.includes(s)) selectedSeasons.delete(s);
+  renderSeasonChips();
+}
+
+function renderSeasonChips() {
+  const box = $("seasonChips");
+  box.innerHTML = "";
+  availableSeasons.forEach(s => {
+    const b = document.createElement("button");
+    b.textContent = s;
+    b.className = selectedSeasons.has(s) ? "on" : "";
+    b.onclick = e => toggleSeason(s, e.shiftKey);
+    box.appendChild(b);
+  });
+  const n = selectedSeasons.size;
+  $("seasonsNote").textContent = n ? `${n} selected · shift-click selects a range`
+                                   : "all seasons · click to pick, shift-click for a range";
+}
+
+async function seasonsChanged() {
+  renderSeasonChips();
+  await Promise.all([loadWeeks(), loadPlayers()]);
+  schedulePlot();
+}
+
+function toggleSeason(s, range) {
+  if (range && lastClickedSeason != null) {
+    const [lo, hi] = [Math.min(lastClickedSeason, s), Math.max(lastClickedSeason, s)];
+    availableSeasons.forEach(x => { if (x >= lo && x <= hi) selectedSeasons.add(x); });
+  } else if (selectedSeasons.has(s)) {
+    selectedSeasons.delete(s);
+  } else {
+    selectedSeasons.add(s);
+  }
+  lastClickedSeason = s;
+  seasonsChanged();
+}
+$("seasonsAll").onclick = () => { selectedSeasons.clear(); seasonsChanged(); };
+$("seasonsLatest").onclick = () => {
+  selectedSeasons.clear();
+  if (availableSeasons.length) selectedSeasons.add(availableSeasons.at(-1));
+  seasonsChanged();
+};
+
+// ---------- week chips ----------
+let availableWeeks = [];          // [{ week, post }]
+const selectedWeeks = new Set();  // empty = every week
+let lastClickedWeek = null;
+
+async function loadWeeks() {
+  const p = new URLSearchParams({ columns: "season_type,week" });
+  if (selectedSeasons.size) p.set("season__in", seasonsParam());
+  try {
+    const data = await (await fetch(`/${$("dataset").value}/distinct?${p}`)).json();
+    // a week number counts as playoffs only if it's never regular season in the picked seasons
+    // (week 18 was the wild card round before 2021, a regular-season week since)
+    const reg = new Set(), all = new Set();
+    data.values.forEach(([type, week]) => {
+      if (week == null) return;
+      all.add(week);
+      if (type === "REG") reg.add(week);
+    });
+    availableWeeks = [...all].map(week => ({ week, post: !reg.has(week) })).sort((a, b) => a.week - b.week);
+  } catch { availableWeeks = []; }
+  for (const w of [...selectedWeeks]) {
+    if (!availableWeeks.some(a => a.week === w)) selectedWeeks.delete(w);
+  }
+  renderWeekChips();
+}
+
+function renderWeekChips() {
+  const box = $("weekChips");
+  box.innerHTML = "";
+  let prevPost = false;
+  availableWeeks.forEach(({ week, post }) => {
+    if (post && !prevPost && box.children.length) {
+      const sep = document.createElement("span");
+      sep.className = "sep";
+      box.appendChild(sep);
+    }
+    prevPost = post;
+    const b = document.createElement("button");
+    b.textContent = post ? `P${week}` : week;
+    b.title = post ? `postseason week ${week}` : `week ${week}`;
+    b.className = (selectedWeeks.has(week) ? "on " : "") + (post ? "post" : "");
+    b.onclick = e => toggleWeek(week, e.shiftKey);
+    box.appendChild(b);
+  });
+  const n = selectedWeeks.size;
+  $("weeksNote").textContent = n ? `${n} selected · shift-click selects a range`
+                                 : "all weeks · click to pick, shift-click for a range";
+}
+
+function toggleWeek(week, range) {
+  if (range && lastClickedWeek != null) {
+    const [lo, hi] = [Math.min(lastClickedWeek, week), Math.max(lastClickedWeek, week)];
+    availableWeeks.forEach(({ week: w }) => { if (w >= lo && w <= hi) selectedWeeks.add(w); });
+  } else if (selectedWeeks.has(week)) {
+    selectedWeeks.delete(week);
+  } else {
+    selectedWeeks.add(week);
+  }
+  lastClickedWeek = week;
+  renderWeekChips();
+  schedulePlot();
+}
+
+// Reg season / Playoffs filter on season type rather than week numbers, since playoff week numbers
+// differ between seasons
+function selectSeasonType(type) {
+  selectedWeeks.clear();
+  delete params.season_type; delete params.season_type__in;
+  if (type) params.season_type__in = type;
+  renderWeekChips();
+  filtersChanged();
+}
+$("weeksAll").onclick = () => selectSeasonType(null);
+$("weeksReg").onclick = () => selectSeasonType("REG");
+$("weeksPost").onclick = () => selectSeasonType("POST");
+
+let lastRows = [], lastDataset = "carries";
+
+let plotMode = "plays";   // "plays" | "heat"
+let plotSeq = 0;          // ignore responses from plots superseded by a newer one
+
+async function plot() {
+  const dataset = $("dataset").value;
+  const seq = ++plotSeq;
+  setStatus("Loading…");
+  $("plotBtn").disabled = true;
+  try {
+    if (plotMode === "heat") {
+      const q = new URLSearchParams(buildQuery(false));
+      q.delete("limit");
+      q.set("mode", $("heatMode").value);
+      q.set("smooth", $("heatSmooth").value);
+      const res = await fetch(`/${dataset}/heatmap?${q}`);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+      const d = await res.json();
+      if (seq !== plotSeq) return;
+      drawHeat(d, dataset);
+      setStatus(d.n_plays ? `Heatmap of all ${d.n_plays.toLocaleString()} matching ${dataset} (no row limit).`
+                          : `No ${dataset} match these filters.`);
+      syncUrl();
+      return;
+    }
+    heatData = heatMesh = null;
+    const res = await fetch(`/${dataset}?${buildQuery(false)}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || res.statusText);
+    }
+    const data = await res.json();
+    if (seq !== plotSeq) return;
+    lastRows = data.results; lastDataset = dataset;
+    drawPlays(dataset, lastRows);
+    const limit = +($("f_limit").value || 300);
+    setStatus(data.count ? `${data.count} ${dataset} plotted${data.count >= limit ? ` (row limit ${limit} reached - raise it or narrow the filters)` : ""}.`
+                         : `No ${dataset} match these filters.`);
+    syncUrl();
+  } catch (e) {
+    setStatus(`Error: ${e.message}`);
+  } finally {
+    $("plotBtn").disabled = false;
+  }
+}
+
+function setView(three) {
+  is3D = three;
+  $("btn3d").classList.toggle("active", three);
+  $("btn2d").classList.toggle("active", !three);
+  if (plotMode === "heat" && heatData) drawHeat(heatData, $("dataset").value);  // flat vs raised surface
+  else setupCamera();
+  syncUrl();
+}
+$("btn3d").onclick = () => setView(true);
+$("btn2d").onclick = () => setView(false);
+
+function setPlotMode(mode) {
+  plotMode = mode;
+  document.body.classList.toggle("heat", mode === "heat");
+  $("btnPlays").classList.toggle("active", mode === "plays");
+  $("btnHeat").classList.toggle("active", mode === "heat");
+  $("f_limit").disabled = mode === "heat";
+  $("heatModeBox").style.display = mode === "heat" && $("dataset").value === "passes" ? "none" : "";
+  tip.style.display = "none";
+}
+$("btnPlays").onclick = () => { setPlotMode("plays"); plot(); };
+$("btnHeat").onclick = () => { setPlotMode("heat"); plot(); };
+$("heatMode").onchange = plot;
+$("heatSmooth").onchange = plot;
+$("plotBtn").onclick = plot;
+$("dataset").onchange = async () => {
+  setPlotMode(plotMode);   // "Heat of" doesn't apply to passes
+  await loadSpec($("dataset").value);
+  await loadSeasons();
+  await Promise.all([loadWeeks(), loadTeams(), loadPlayers()]);
+  plot();
+};
+$("f_team").onchange = plot;
+$("f_name").addEventListener("change", plot);
+$("csvBtn").onclick = () => window.open(`/${$("dataset").value}?${buildQuery(true)}`, "_blank");
+document.querySelectorAll("#f_limit").forEach(el =>
+  el.addEventListener("keydown", e => { if (e.key === "Enter") plot(); }));
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls?.update();
+  renderer.render(scene, camera);
+}
+
+const urlParams = new URLSearchParams(location.search);
+if (urlParams.get("view") === "2d") {
+  is3D = false;
+  $("btn3d").classList.remove("active");
+  $("btn2d").classList.add("active");
+}
+if (urlParams.has("heat")) $("heatMode").value = urlParams.get("heat");
+if (urlParams.has("smooth")) $("heatSmooth").value = urlParams.get("smooth");
+if (urlParams.get("dataset")) $("dataset").value = urlParams.get("dataset");
+setPlotMode(urlParams.get("plot") === "heat" ? "heat" : "plays");
+// ?seasons=2023,2024 (or ?seasons= for all; ?season=2024 also accepted); defaults to 2024
+(urlParams.has("seasons") ? urlParams.get("seasons") : (urlParams.get("season") ?? "2024")).split(",")
+  .map(Number).filter(Boolean).forEach(s => selectedSeasons.add(s));
+for (const [param, id] of [["dataset", "dataset"], ["name", "f_name"], ["limit", "f_limit"]]) {
+  if (urlParams.has(param)) $(id).value = urlParams.get(param);
+}
+// ?weeks=1,2,3 (or ?weeks= for all); defaults to week 1
+(urlParams.has("weeks") ? urlParams.get("weeks") : "1").split(",")
+  .map(Number).filter(Boolean).forEach(w => selectedWeeks.add(w));
+// anything else in the URL is a filter param (unknown ones are dropped once the spec loads)
+const RESERVED = new Set(["dataset", "view", "season", "seasons", "weeks", "team", "name", "limit", "q",
+                          "plot", "heat", "smooth"]);
+for (const [k, v] of urlParams) if (!RESERVED.has(k)) params[k] = v;
+
+buildField();
+resize();
+animate();
+(async () => {
+  await loadSpec($("dataset").value);
+  await Promise.all([loadTeams(), loadSeasons()]);
+  if (urlParams.has("team")) $("f_team").value = urlParams.get("team");
+  await Promise.all([loadWeeks(), loadPlayers()]);
+  if (urlParams.get("q")) {            // ?q=... runs a question on load
+    $("askInput").value = urlParams.get("q");
+    askQuestion(urlParams.get("q"));
+  } else {
+    plot();
+  }
+})();
+</script>
+</body>
+</html>

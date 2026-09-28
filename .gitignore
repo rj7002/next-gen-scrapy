@@ -19,6 +19,10 @@ venv/
 # jupyter
 .ipynb_checkpoints/
 
+# API database + pbp-match cache (regenerate with service/build_matches.py, service/build_db.py)
+service/ngs.db
+service/matched/
+
 # secrets
 .env
 .env.*

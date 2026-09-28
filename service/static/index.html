@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>next-gen-scrapy analytics API</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 780px;
+         margin: 3rem auto; padding: 0 1.5rem; line-height: 1.55; }
+  h1 { font-size: 1.6rem; }
+  code, pre { background: rgba(127,127,127,0.15); border-radius: 6px; padding: 0.15rem 0.4rem; }
+  pre { padding: 0.9rem 1rem; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid rgba(127,127,127,0.25); }
+  a { color: inherit; text-decoration: underline; }
+  .cta { display: inline-block; padding: 0.5rem 1rem; border-radius: 8px; background: rgba(127,127,127,0.15); }
+</style>
+</head>
+<body>
+<h1>next-gen-scrapy analytics API</h1>
+<p>
+  Free, no-auth access to every pass, route and carry recovered from NFL Next Gen Stats chart
+  images, matched to its real play-by-play + FTN charting row - so every play feature (down,
+  distance, EPA, WP, coverage, play-action, ...) is filterable and exportable alongside the
+  chart's own recovered field coordinates.
+</p>
+
+<p>
+  <a class="cta" href="/analytics">Open the analytics explorer &rarr;</a>
+</p>
+
+<p>
+  <a href="/docs">Interactive API docs (Swagger)</a> &middot;
+  <a href="/redoc">Reference docs (ReDoc)</a>
+</p>
+
+<h2>Endpoints</h2>
+<table>
+  <tr><th>Endpoint</th><th>Grain</th></tr>
+  <tr><td><code>GET /passes</code></td><td>one row per pass, matched to its pbp play</td></tr>
+  <tr><td><code>GET /routes</code></td><td>one row per route (full traced path), matched to its pbp play</td></tr>
+  <tr><td><code>GET /carries</code></td><td>one row per carry (full traced path), matched to its pbp play</td></tr>
+  <tr><td><code>GET /&lt;table&gt;/fields</code></td><td>column metadata (name, type, distinct values) for building filters</td></tr>
+  <tr><td><code>GET /&lt;table&gt;/distinct</code></td><td>distinct values of <code>?columns=a,b</code> under any filters (e.g. weeks in a season)</td></tr>
+  <tr><td><code>GET /&lt;table&gt;/heatmap</code></td><td>smoothed density grid of every matching play (same filters; <code>mode=path|end</code>, <code>smooth=</code> yards)</td></tr>
+  <tr><td><code>GET /filters?dataset=</code></td><td>the curated filters (label, group, control type, choices / range)</td></tr>
+  <tr><td><code>GET /ask?q=</code></td><td>plain-English question &rarr; dataset, season, weeks, player and filter params</td></tr>
+</table>
+
+<h2>Filtering</h2>
+<p>Every column on every endpoint is filterable - chart columns and pbp/FTN columns alike:</p>
+<pre>?season=2024&team=BUF&pass_type=TOUCHDOWN     exact match
+?epa__gte=1&air_yards__lte=10                 range (__gte / __lte / __gt / __lt / __ne)
+?week__in=1,2,3                               any of several values
+&is_play_action=true                          booleans as true/false</pre>
+
+<h2>Examples</h2>
+<pre>curl "http://127.0.0.1:8000/passes?season=2024&team=BUF&pass_type=TOUCHDOWN"
+
+curl "http://127.0.0.1:8000/routes?name=Justin+Jefferson&is_play_action=true&format=csv" -o jj_pa_routes.csv</pre>
+
+<p>All endpoints accept <code>limit</code> (default 500, max 5000), <code>offset</code> and <code>sort</code>
+(e.g. <code>sort=-epa</code>) for pagination, and <code>format=csv</code> to export instead of JSON.</p>
+</body>
+</html>
