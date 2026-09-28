@@ -601,7 +601,10 @@ happened), and the share of plays that are `location_confident`:
 
 ## What's new
 
-Since 0.2.3:
+0.3.1: `load_pbp_with_ftn` no longer fails for a season whose NGS participation or FTN data isn't
+published yet (e.g. the season in progress) - it warns and leaves those columns empty.
+
+0.3.0 (since 0.2.3):
 
 - **Matching** (`match_to_pbp`) rewritten: scored on every piece of evidence both sides share (see
   [How matching works](#how-matching-works)) instead of yardage alone - on independent checks, pass locations went
