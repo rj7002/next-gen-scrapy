@@ -28,23 +28,29 @@ def to_paths(chart_df, kind):
 
     - pass: a pass chart is already one row per pass (a single point, not a path) - returned
       unchanged.
-    - carry: one row per (game_id, carry_id): the scalar columns (name/team/gain_class/touchdown/
-      fumble_lost/handoff_ok/...), plus path_x/path_y (the whole traced line, in point order) and
-      y_coord (the final point). y_coord is the last point's own value, not
-      path_y[-1] - path_y[0]: the chart's y-axis is already zeroed at the line of scrimmage, so a
-      carry drawn starting behind the LOS (a shotgun handoff, say) would have its gain overstated
-      by computing a delta from the line's own start instead of from the LOS.
-    - route: one row per (game_id, route_id): the scalar columns (name/team/route_type/touchdown/
-      start_ok/...), plus path_x/path_y/path_segment (segment: 'route' or 'after_catch') and
-      catch_y (the target's depth - the last pre-catch point's own y value, i.e. air_yards; not
-      the same as the route's final y, which also includes yards after the catch).
+    - carry: one row per (game_id, esb_id, carry_id) - carry_id is only unique per player within
+      a game, not across the whole game, so esb_id is part of the grouping key too - with the
+      scalar columns (name/team/gain_class/touchdown/fumble_lost/handoff_ok/...), plus path_x/
+      path_y (the whole traced line, in point order) and y_coord (the final point). y_coord is
+      the last point's own value, not path_y[-1] - path_y[0]: the chart's y-axis is already zeroed
+      at the line of scrimmage, so a carry drawn starting behind the LOS (a shotgun handoff, say)
+      would have its gain overstated by computing a delta from the line's own start instead of
+      from the LOS.
+    - route: one row per (game_id, esb_id, route_id) - same reasoning as carry_id above - with the
+      scalar columns (name/team/route_type/touchdown/start_ok/...), plus path_x/path_y/path_segment
+      (segment: 'route' or 'after_catch') and catch_y (the target's depth - the last pre-catch
+      point's own y value, i.e. air_yards; not the same as the route's final y, which also
+      includes yards after the catch).
     """
     assert kind in ("pass", "carry", "route")
     if kind == "pass":
         return chart_df.copy()
 
     id_col = "carry_id" if kind == "carry" else "route_id"
-    scalar_cols = SCALAR_COLS[kind]
+    # esb_id is a groupby key (route_id/carry_id is only unique per player within a game, not
+    # across the whole game - two receivers can each have "route #2"), so it comes back via
+    # reset_index() already; dropped here to avoid a duplicate esb_id column.
+    scalar_cols = [c for c in SCALAR_COLS[kind] if c != "esb_id"]
 
     def _agg(g):
         g = g.sort_values("point")
@@ -60,7 +66,7 @@ def to_paths(chart_df, kind):
         return pd.Series(out)
 
     return (
-        chart_df.groupby(["game_id", id_col], sort=False)
+        chart_df.groupby(["game_id", "esb_id", id_col], sort=False)
         .apply(_agg, include_groups=False)
         .reset_index()
     )

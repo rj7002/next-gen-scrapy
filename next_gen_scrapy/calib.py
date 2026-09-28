@@ -115,6 +115,71 @@ def _yard_rows(im, los_last):
     return np.array([float(np.mean(m)) for m in merged])
 
 
+MAJOR_PROMINENCE = 30.0          # 5-yard lines stand ~60-75 grey levels above the turf; the 1-yard grid <= ~16
+
+
+def _major_rows(im, los_last):
+    """
+    Rows of the bold 5-yard lines only. The chart art also draws a faint 1-yard grid, which
+    _yard_rows picks up too; on some art (e.g. the 2018-19 charts) those faint lines are numerous
+    enough to out-vote the real 5-yard lines and lock the scale onto the wrong grid, so the bold lines
+    are found separately, by how far they stand above the turf around them.
+    """
+    g = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY).astype(float)
+    hsv = cv2.cvtColor(im, cv2.COLOR_BGR2HSV)
+    drawn = hsv[..., 1] > 90
+    prof = np.full(FIELD_ROWS, np.nan)
+    for y in range(FIELD_ROWS):
+        ok = ~drawn[y, 300:900]
+        if ok.sum() > 200:
+            prof[y] = np.median(g[y, 300:900][ok])
+    rows = []
+    for y in range(12, int(los_last) - 6):
+        w = prof[y - 12:y + 13]
+        if np.isnan(w).any() or prof[y] != np.nanmax(prof[y - 5:y + 6]):
+            continue
+        base = np.median(np.r_[prof[y - 12:y - 5], prof[y + 6:y + 13]])
+        if prof[y] - base >= MAJOR_PROMINENCE:
+            rows.append(y)
+    merged = []
+    for y in rows:
+        if merged and y - merged[-1][-1] <= 3:
+            merged[-1].append(y)
+        else:
+            merged.append([y])
+    return np.array([float(np.mean(m)) for m in merged])
+
+
+def _scale_from_major_lines(u_major, tol=0.35):
+    """
+    C from the bold lines alone (u = C * d, every line at a multiple of 5 yd). Any C/k also puts
+    every line on the grid (their gaps just become 10, 15, ... yd), so take the largest C that fits
+    them all - the one where the closest pair of bold lines is exactly 5 yd apart. Returns None if the
+    lines don't pin it down.
+    """
+    u = np.sort(u_major[u_major > 1e-6])
+    if len(u) < 3:
+        return None
+    gaps = np.diff(u)
+    best = None
+    for g in gaps:
+        for k in (1, 2, 3):
+            C = float(g / (YARD_STEP * k))
+            d = u / C
+            err = np.abs(d - np.round(d / YARD_STEP) * YARD_STEP)
+            if np.all(err < tol * 2) and d.max() <= 120:
+                if best is None or C > best[0] * 1.0001:
+                    best = (C, float(np.sqrt(np.mean(err ** 2))))
+    if best is None:
+        return None
+    # refine with every bold line at once: u = C * d through the origin, d = its 5-yard multiple
+    n = np.round(u / best[0] / YARD_STEP) * YARD_STEP
+    keep = n > 0
+    C = float(np.sum(u[keep] * n[keep]) / np.sum(n[keep] ** 2))
+    err = np.abs(u / C - n)
+    return C, float(np.sqrt(np.mean(err ** 2)))
+
+
 class Chart:
     """Calibration of one chart image: converts between image pixels and field yards."""
 
@@ -243,23 +308,37 @@ def calibrate(im):
     # row, try "this row is the +5 / +10 / ... line", and keep the scale that puts the most rows on
     # the 5-yard grid. Spurious rows simply fail to vote.
     tol = 0.35
-    best = None
-    for ui in u:
-        for d0 in np.arange(YARD_STEP, 65.0, YARD_STEP):
-            C = float(ui / d0)
-            if C <= 0:
-                continue
-            d = u / C
-            err = np.abs(d - np.round(d / YARD_STEP) * YARD_STEP)
-            hit = err < tol
-            if hit.sum() < 4 or d.max() > 120:
-                continue
-            key = (-int(hit.sum()), float(err[hit].mean()))
-            if best is None or key < best[0]:
-                best = (key, C, err, hit)
-    if best is None:
-        raise CalibrationError("yard lines do not fit a 5-yard grid (%d rows)" % len(u))
-    _, C, err, hit = best
+    majors = _major_rows(im, bar[0])
+    major_fit = _scale_from_major_lines((B - majors) / (majors - V)) if len(majors) else None
+    if major_fit is not None:
+        # the bold 5-yard lines pin the scale; every detected row (faint grid included) is then only
+        # used to judge how far out that scale is corroborated
+        C = major_fit[0]
+        d = u / C
+        err = np.abs(d - np.round(d / YARD_STEP) * YARD_STEP)
+        hit = err < tol
+        if hit.sum() < 2:
+            hit = np.zeros_like(hit)
+            um = np.sort(((B - majors) / (majors - V)) / C)
+            u, err, hit = um * C, np.abs(um - np.round(um / YARD_STEP) * YARD_STEP), np.ones(len(um), bool)
+    else:
+        best = None
+        for ui in u:
+            for d0 in np.arange(YARD_STEP, 65.0, YARD_STEP):
+                C = float(ui / d0)
+                if C <= 0:
+                    continue
+                d = u / C
+                err = np.abs(d - np.round(d / YARD_STEP) * YARD_STEP)
+                hit = err < tol
+                if hit.sum() < 4 or d.max() > 120:
+                    continue
+                key = (-int(hit.sum()), float(err[hit].mean()))
+                if best is None or key < best[0]:
+                    best = (key, C, err, hit)
+        if best is None:
+            raise CalibrationError("yard lines do not fit a 5-yard grid (%d rows)" % len(u))
+        _, C, err, hit = best
     # The deepest yard line that actually won the vote, walking outward from the LOS and stopping at
     # the first suspiciously large gap - not just the single deepest hit. Past a chart's real gridlines,
     # row_to_yard is extrapolating the perspective curve with no anchor, and the compressed, hazy top

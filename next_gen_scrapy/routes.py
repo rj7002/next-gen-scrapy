@@ -112,6 +112,12 @@ def detect_routes(image, expected=None):
     Returns (routes, info). routes: list of dict(route_type, td, pts (Nx2 field yd), seg (N labels)).
     route_type is COMPLETE (white line, maybe with after-catch) or INCOMPLETE (gray line).
     """
+    ctx = _prepare(image, expected)
+    return _finalize(ctx, ctx["reconcile"](ctx["white_pieces"], ctx["receptions"]))
+
+
+def _prepare(image, expected):
+    """Calibrate the chart and trace its raw line pieces (white / grey / green), not yet reconciled."""
     im = K.read_image(image)
     hsv = cv2.cvtColor(im, cv2.COLOR_BGR2HSV)
     lay = K.calibrate(im)
@@ -135,6 +141,7 @@ def detect_routes(image, expected=None):
         tracer split (progressively looser), then drop leftover slivers. Used with the counts from the
         chart metadata, which say exactly how many lines the chart drew.
         """
+        paths = list(paths)
         if want is None or want < 1:
             return paths
         for gap, turn in ((30, 45), (60, 70), (90, 120)):
@@ -147,14 +154,23 @@ def detect_routes(image, expected=None):
             paths.pop(0)
         return paths
 
-    white = reconcile(trace(white_m, 25, (gray_m, green_m)),
-                      None if expected is None else expected.get("receptions"))
-    gray = trace(gray_m, 25, (white_m, green_m))
-    # targets = every line the chart draws, so the incomplete (grey) ones are targets - receptions
     targets = None if expected is None else expected.get("targets")
+    return dict(lay=lay, rings=rings, expected=expected, ceiling=ceiling, targets=targets,
+                receptions=None if expected is None else expected.get("receptions"),
+                white_pieces=trace(white_m, 25, (gray_m, green_m)),
+                gray_pieces=trace(gray_m, 25, (white_m, green_m)),
+                green=trace(green_m, 6, (white_m, gray_m)), reconcile=reconcile)
+
+
+def _finalize(ctx, white):
+    """Everything after the white (completed) route lines are fixed: incomplete lines, after-catch
+    runs, touchdown rings, orientation, shared stems, resampling to field yards."""
+    lay, rings, expected, ceiling, targets = ctx["lay"], ctx["rings"], ctx["expected"], ctx["ceiling"], ctx["targets"]
+    green = ctx["green"]
+    gray = ctx["gray_pieces"]
+    # targets = every line the chart draws, so the incomplete (grey) ones are targets - receptions
     if targets is not None and expected.get("receptions") is not None:
-        gray = reconcile(gray, targets - len(white))
-    green = trace(green_m, 6, (white_m, gray_m))
+        gray = ctx["reconcile"](gray, targets - len(white))
 
     routes = [dict(route_type="COMPLETE", px=w, seg=np.array(["route"] * len(w)), td=False) for w in white]
     routes += [dict(route_type="INCOMPLETE", px=g, seg=np.array(["route"] * len(g)), td=False) for g in gray]
@@ -296,3 +312,130 @@ def detect_routes(image, expected=None):
     return out, dict(depth_yd=round(lay.max_reliable_yard, 1), n_white=len(white), n_gray=len(gray), n_green=len(green), orphan_green=orphans,
                      n_td_rings=len(rings), n_label_glyphs=n_glyphs, n_deep_truncated=n_deep_truncated,
                      n_deep_dropped=n_deep_dropped)
+
+
+# ---------------------------------------------------------------------------------------------------
+# Alternative readings of a tangled chart
+#
+# When the tracer finds more white pieces than the chart has catches, some pieces belong to the same
+# route and must be joined - but where routes cross, several joinings can look about equally good to
+# geometry alone. route_alternatives() enumerates the most plausible ones, so a later step can pick
+# the one that fits the real plays best (see next_gen_scrapy.retrace).
+# ---------------------------------------------------------------------------------------------------
+
+ALT_MAX_GAP_PX = 90.0
+ALT_MAX_TURN_DEG = 120.0
+
+
+def _join_candidates(pieces, max_gap=ALT_MAX_GAP_PX, max_turn_deg=ALT_MAX_TURN_DEG):
+    """Every plausible end-to-end join: (score, i, end_i, j, end_j), lower score = more natural."""
+    cos_t = np.cos(np.radians(max_turn_deg))
+    out = []
+    for i in range(len(pieces)):
+        for j in range(i + 1, len(pieces)):
+            for ei in (0, 1):
+                for ej in (0, 1):
+                    a = pieces[i] if ei else pieces[i][::-1]
+                    b = pieces[j] if ej else pieces[j][::-1]
+                    gap_v = b[-1] - a[-1]
+                    gap = float(np.linalg.norm(gap_v))
+                    if gap > max_gap:
+                        continue
+                    ta, tb = NP._end_tangent(a), NP._end_tangent(b)
+                    if np.dot(ta, tb) > -cos_t:
+                        continue
+                    if gap > 1e-6:
+                        u = gap_v / gap
+                        if np.dot(ta, u) < cos_t or np.dot(tb, -u) < cos_t:
+                            continue
+                    out.append((gap + 20 * (1 + float(np.dot(ta, tb))), i, ei, j, ej))
+    return sorted(out)
+
+
+def _assemble(pieces, joins):
+    """Chain pieces through the chosen joins (each end used at most once, no cycles) into paths."""
+    partner = {}
+    for _, i, ei, j, ej in joins:
+        partner[(i, ei)] = (j, ej)
+        partner[(j, ej)] = (i, ei)
+    seen, paths = set(), []
+    for start in range(len(pieces)):
+        if start in seen:
+            continue
+        # walk to one free end of this chain first
+        cur, end_in = start, 0
+        visited = {start}
+        while (cur, end_in) in partner and partner[(cur, end_in)][0] not in visited:
+            cur, e = partner[(cur, end_in)]
+            visited.add(cur)
+            end_in = 1 - e
+        # now walk forward from that free end, building the path
+        seq, i, free_end = [], cur, end_in
+        while True:
+            seen.add(i)
+            p = pieces[i] if free_end == 0 else pieces[i][::-1]        # piece runs away from free_end
+            seq.append(p)
+            out_end = 1 - free_end
+            nxt = partner.get((i, out_end))
+            if nxt is None or nxt[0] in seen:
+                break
+            i, free_end = nxt
+        paths.append(np.vstack(seq))
+    return paths
+
+
+def _white_decompositions(pieces, want, max_alts=40, max_cands=24, max_results=3000):
+    """The `max_alts` lowest-cost ways to join `pieces` down to exactly `want` lines."""
+    if want is None or len(pieces) <= want:
+        return []
+    k = len(pieces) - want
+    cands = _join_candidates(pieces)[:max_cands]
+    results = []
+
+    def root(par, x):
+        while par[x] != x:
+            x = par[x]
+        return x
+
+    def dfs(start, chosen, used, par, total):
+        if len(results) >= max_results:
+            return
+        if len(chosen) == k:
+            results.append((total, list(chosen)))
+            return
+        for idx in range(start, len(cands)):
+            s, i, ei, j, ej = cands[idx]
+            if (i, ei) in used or (j, ej) in used:
+                continue
+            ri, rj = root(par, i), root(par, j)
+            if ri == rj:
+                continue                                   # would close a loop
+            par2 = dict(par)
+            par2[ri] = rj
+            dfs(idx + 1, chosen + [cands[idx]], used | {(i, ei), (j, ej)}, par2, total + s)
+
+    dfs(0, [], frozenset(), {i: i for i in range(len(pieces))}, 0.0)
+    results.sort(key=lambda t: t[0])
+    return [(total, _assemble(pieces, joins)) for total, joins in results[:max_alts]]
+
+
+def route_alternatives(image, expected, max_alts=40):
+    """
+    Several complete readings of one route chart, as [(geometry_cost, routes, info), ...], lowest
+    geometry cost first. The first is always detect_routes()' own reading (cost 0 relative to the
+    others' best), so picking alternatives can only ever add options, never lose the default.
+    """
+    ctx = _prepare(image, expected)
+    default = ctx["reconcile"](ctx["white_pieces"], ctx["receptions"])
+    alts = _white_decompositions(ctx["white_pieces"], ctx["receptions"], max_alts=max_alts)
+    base = alts[0][0] if alts else 0.0
+    out = [(0.0,) + _finalize(ctx, default)]
+    sigs = set()
+    for total, white in alts:
+        sig = tuple(sorted(tuple(np.round(w[[0, -1]].ravel()).astype(int)) for w in white))
+        if sig in sigs:
+            continue
+        sigs.add(sig)
+        routes, info = _finalize(ctx, white)
+        out.append((total - base,) + (routes, info))
+    return out
