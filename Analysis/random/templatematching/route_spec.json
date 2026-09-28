@@ -1,0 +1,96 @@
+{
+  "spec_version": "1.0",
+  "description": "Route-tree classification spec: templates + rule thresholds. Source of truth for route_hybrid.py - edit this file, not the code.",
+
+  "conventions": {
+    "frame": "Receiver-relative. Origin (0,0) is the receiver's position at the snap.",
+    "depth": "+depth = yards downfield past the line of scrimmage.",
+    "inside": "+inside = yards toward the middle of the field; -inside = toward his nearest sideline. Derived from which half of the field he lined up on, so a slant and a quick-out are not mirror images.",
+    "units": "yards"
+  },
+
+  "matching": {
+    "resample_points": 24,
+    "gamma": 0.7,
+    "gamma_note": "Weight on the template->route distance term. Total = mean(route->template) + gamma * mean(template->route). Two-way per Kinney (arXiv:2003.05428), so a template that overlaps only part of a route cannot win.",
+    "scale_note": "Scaling is uniform in both axes so break ANGLES never distort - angles are what separate routes. Templates in a depth ladder (same break direction, different depth) get tight bands or they collapse into each other.",
+    "default_scales": [0.7, 0.9, 1.1, 1.4, 1.8, 2.4],
+    "other_max_dist": 5.0,
+    "other_note": "Above this match_dist (yd), the nearest template is still a bad fit, not a real match - relabel OTHER rather than report a confident-looking wrong name. Checked at 2024-09: ~7.9% of routes land here (option routes with an actual loop, and other shapes no template family fits well). Chasing this tail with more templates hits diminishing returns fast - going from DRAG's original 42.7%-of-SLANT problem to this was already a ~200x drop in scale."
+  },
+
+  "templates": {
+    "FLAT (1)":   {"points": [[0, 0], [0, 2], [-6, 3]],        "scales": [0.75, 0.9, 1.0, 1.15, 1.4],  "note": "shallow, to the sideline. Ladder with OUT (5)."},
+    "SLANT (2)":  {"points": [[0, 0], [0, 1.5], [7, 8]],       "scales": [0.75, 0.9, 1.0, 1.15, 1.4],  "note": "immediate 45 deg inside. Ladder with DIG (6)."},
+    "OUT (5)":    {"points": [[0, 0], [0, 12], [-8, 12.5]],    "scales": [0.7, 0.85, 1.0, 1.2, 1.5],   "note": "90 deg to the sideline."},
+    "DIG (6)":    {"points": [[0, 0], [0, 12], [8, 12.5]],     "scales": [0.7, 0.85, 1.0, 1.2, 1.5],   "note": "90 deg to the middle."},
+    "CORNER (7)": {"points": [[0, 0], [0, 12], [-6, 19]],      "scales": null,                          "note": "45 deg up-and-out."},
+    "POST (8)":   {"points": [[0, 0], [0, 12], [6, 19]],       "scales": null,                          "note": "45 deg up-and-in."},
+    "GO (9)":     {"points": [[0, 0], [0, 12], [0, 22]],       "scales": null,                          "note": "straight vertical."},
+    "DRAG":       {"points": [[0, 0], [2, 1.5], [12, 3]],      "scales": [0.7, 0.9, 1.1, 1.3, 1.6],    "note": "Not in the numbered tree. Added because 42.7% of routes matched to SLANT were actually flat crossers (18.8 yds lateral at 6.8 yds depth)."},
+    "FADE":       {"points": [[0, 0], [-1, 8], [-4, 18]],      "scales": null,                          "note": "Not in the numbered tree. Added because 28.6% of CORNERs were the corner template stretched >=1.8x to cover gradual deep drift."},
+    "CROSS":      {"points": [[0, 0], [15.5, 4.7], [28, 12.5]], "scales": [0.4, 0.6, 0.8, 1.0, 1.3, 1.7, 2.2, 3.0, 4.5], "note": "Not in the numbered tree. Added because 24.7% of routes matched to DRAG had match_dist > 5yd and a genuinely steeper angle (~24 deg vs DRAG's ~14 deg) that got worse the deeper they went - not a scale problem, a different shape. Median of that population's own shape, not a guess."},
+    "SEAM":       {"points": [[0, 0], [7.7, 17.4], [15.8, 34.2]], "scales": [0.5, 0.65, 0.8, 1.0, 1.25, 1.55], "note": "Not in the numbered tree. Added from k-means clustering of the OTHER bucket: 37% of it (2.9% of all routes) was one tight cluster with a near-identical overall angle to CROSS (~24 deg) but a STRAIGHT diagonal from the snap, not CROSS's curve (CROSS's midpoint sits well below the straight line start-to-end; this cluster's midpoint sits right on it) - a constant-angle deep diagonal with no vertical stem, unlike CORNER/POST which run straight for 12yd first."}
+  },
+
+  "rules": {
+    "note": "Evaluated in this order, first match wins; anything reaching the end goes to template matching. These five cannot be templated - see why_not_templated.",
+    "order": ["SCREEN", "ANGLE", "WHEEL", "REVERSAL_FAMILY"],
+
+    "SCREEN": {
+      "label": "SCREEN",
+      "condition": "max_depth < screen_max_depth",
+      "screen_max_depth": 1.5,
+      "why_not_templated": "Defined by the ABSENCE of movement, not by a shape. No polyline to match against."
+    },
+
+    "ANGLE": {
+      "label": "ANGLE",
+      "condition": "min_depth <= angle_min_dip AND end_depth >= angle_min_release",
+      "angle_min_dip": -2.5,
+      "angle_min_release": 3.0,
+      "why_not_templated": "Dips behind the LOS before releasing upfield (a backfield hook-and-go), so like the reversal family its own outbound and return legs overlap - point-to-polyline distance can't see the dip, only the net shape after it. 24.7% of DRAG's worst fits (match_dist > 5yd) were this shape, not a deep crosser."
+    },
+
+    "WHEEL": {
+      "label": "WHEEL",
+      "condition": "shallow_outside >= wheel_min_outside AND climb_after >= wheel_min_climb AND net_inside <= wheel_max_net_inside AND abs(final_heading) <= wheel_max_final_heading",
+      "wheel_shallow_depth": 6.0,
+      "wheel_min_outside": 3.0,
+      "wheel_min_climb": 12.0,
+      "wheel_max_net_inside": -4.0,
+      "wheel_max_final_heading": 35.0,
+      "why_not_templated": "Two-phase (flat to the sideline, THEN vertical up it). A single scaled polyline expresses it poorly, and a loose version swallowed every deep fade - it was 7.5% of routes before being tightened to 2.5%."
+    },
+
+    "REVERSAL_FAMILY": {
+      "condition": "reversal >= reversal_min",
+      "reversal_min": 2.0,
+      "comeback_min_depth": 10.0,
+      "branches": [
+        {"label": "COMEBACK (3)", "condition": "max_depth >= comeback_min_depth AND net_inside < -1.0", "note": "back toward the sideline"},
+        {"label": "CURL (4)",     "condition": "max_depth >= comeback_min_depth", "note": "back toward the QB"},
+        {"label": "HITCH (0)",    "condition": "otherwise", "note": "shallow sit-down"}
+      ],
+      "why_not_templated": "A doubling-back route lays its return path on top of its outbound path, so point-to-polyline distance is blind to the reversal. Kinney (arXiv:2003.05428) predicted ZERO curls and comebacks for exactly this reason and left it to future work; handling them by rule is where this beats the paper."
+    }
+  },
+
+  "exclusions": {
+    "backfield_rb": {
+      "condition": "position in [RB, FB, HB] AND abs(start_x) < 4.0",
+      "note": "Kinney excludes backfield running backs: they navigate the offensive and defensive lines rather than running the route tree. Flagged in the output rather than dropped."
+    },
+    "min_points": 5
+  },
+
+  "artifact_filters": {
+    "note": "Chart-scraping artifacts in route_coords.csv. Not applied by the classifier - filter upstream if you want clean input.",
+    "start_downfield": {"condition": "route start_y > 10", "share": "1.86%", "note": "Physically impossible - a route starts at the LOS. Already flagged by the scraper's own start_ok column (catches 100% of these)."},
+    "label_glyph":     {"condition": "bbox < 6yd AND closed loop < 2.5yd AND abs(centre_x) >= 24", "share": "0.16%", "note": "The bowl of the 'O' in the chart's LOS/yard labels, traced as a route. Fixed upstream in next_gen_scrapy calib.text_mask + routes.is_label_glyph."}
+  },
+
+  "references": [
+    "Kinney, M. (2020). Template Matching Route Classification. arXiv:2003.05428"
+  ]
+}
