@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "next-gen-scrapy"
-version = "0.3.1"
+version = "0.4.0"
 description = "Scrape NFL Next Gen Stats pass/route/carry charts, extract field coordinates from the chart images, and match them to play-by-play"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -27,6 +27,7 @@ Repository = "https://github.com/rj7002/next-gen-scrapy"
 
 [project.optional-dependencies]
 pbp = ["nflreadpy", "pyarrow"]
+plot = ["matplotlib"]
 
 [project.scripts]
 ngs-scrape = "next_gen_scrapy.scrape:main"

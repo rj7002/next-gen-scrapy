@@ -38,6 +38,7 @@ passes = get_passes("Josh Allen", 2025, weeks=[1, 2])      # downloads the chart
 - [Command-line pipeline: `ngs-scrape` and `ngs-extract`](#command-line-pipeline)
 - [Output data reference](#output-data-reference)
 - [One row per route or carry: `to_paths`](#one-row-per-route-or-carry-to_paths)
+- [Plotting: `plot` and `draw_field`](#plotting-plot-and-draw_field)
 - [Matching charts to play-by-play](#matching-charts-to-play-by-play)
   - [`load_pbp_with_ftn`](#load_pbp_with_ftn)
   - [`match_to_pbp`](#match_to_pbp)
@@ -61,6 +62,7 @@ passes = get_passes("Josh Allen", 2025, weeks=[1, 2])      # downloads the chart
 ```
 pip install next-gen-scrapy              # scraping + coordinate extraction
 pip install "next-gen-scrapy[pbp]"       # + matching to nflverse play-by-play (adds nflreadpy, pyarrow)
+pip install "next-gen-scrapy[plot]"      # + plotting on an NGS-style field (adds matplotlib)
 ```
 
 Python 3.9+ (developed on 3.14). No R needed. Core dependencies: `requests`, `numpy`, `pandas`, `scipy`,
@@ -283,6 +285,72 @@ Reduces point-per-row data to one row per entity, folding the path into array co
 
 `y_coord` / `catch_y` are the point's own value, not a difference from the line's start: the chart is already
 zeroed at the LOS, so a carry starting in the backfield isn't overstated.
+
+---
+
+## Plotting: `plot` and `draw_field`
+
+```python
+from next_gen_scrapy import get_routes, plot
+
+routes = get_routes("Justin Jefferson", 2024)
+plot(routes, kind="route", title="Justin Jefferson 2024 routes")        # every route
+plot(routes, kind="route", heatmap=True)                                # where his routes go
+plot(routes, kind="route", heatmap=True, heat_of="end")                 # where he's targeted
+```
+
+<p>
+  <img src="https://raw.githubusercontent.com/rj7002/next-gen-scrapy/main/docs/plot_routes.png" width="49%" alt="Justin Jefferson's 2024 routes on an NGS-style field">
+  <img src="https://raw.githubusercontent.com/rj7002/next-gen-scrapy/main/docs/plot_heatmap.png" width="49%" alt="Heatmap of Josh Allen's 2024 pass locations">
+</p>
+
+Needs matplotlib (`pip install "next-gen-scrapy[plot]"`).
+
+### `plot(data, kind="pass", heatmap=False, ax=None, title=None, legend=True, heat_of="path", smooth=1.5, cmap="inferno", colorbar=True, ymin=None, ymax=None, figsize=None)`
+
+Draws passes, routes or carries on a Next Gen Stats-style field and returns the matplotlib `Axes`.
+
+| Argument | Meaning |
+|---|---|
+| `data` | Anything this package produces for that kind: `get_*` output, the `ngs-extract` CSVs, [`to_paths`](#one-row-per-route-or-carry-to_paths) output, or [`match_to_pbp`](#match_to_pbp) output. Point-per-row routes/carries are grouped into paths for you. Filter it first to plot a situation (3rd downs, play action, one coverage, ...) |
+| `kind` | `"pass"`, `"route"` or `"carry"` |
+| `heatmap` | `False`: every play in the charts' own colours. `True`: a smoothed density of where they happened |
+| `heat_of` | Route/carry heatmaps only. `"path"`: everywhere the route/carry went, each play counting once in total. `"end"`: the catch/target point (routes) or where the carry ended |
+| `smooth` | Heatmap smoothing radius, in yards |
+| `cmap` | Heatmap colour map (any matplotlib name) |
+| `ax` | Draw into an existing axes (e.g. one panel of `plt.subplots`) instead of a new figure |
+| `title`, `legend`, `colorbar` | As named. The legend and colour bar sit under the field |
+| `ymin`, `ymax` | Depth range in yards past the LOS. Fits the data when `None` |
+| `figsize` | Figure size when `ax` is `None`. Defaults to a width of 7 in and a height that keeps the field to scale |
+
+What normal mode draws:
+
+| `kind` | Marks |
+|---|---|
+| `"pass"` | Rings coloured by `pass_type`: green complete, white incomplete, red interception, blue touchdown |
+| `"route"` | White (complete) or grey (incomplete) route up to the catch point, a dot at the catch, green yards after the catch, and a blue ring on touchdowns |
+| `"carry"` | Paths coloured by `gain_class`: green 5+ yds, yellow 0-5, red loss. Blue ring on touchdowns, red ring on lost fumbles |
+
+Line widths thin out automatically as the number of plays grows, so a full season stays readable.
+
+### `draw_field(ax=None, ymin=-10, ymax=40, figsize=None, labels=True)`
+
+Just the empty field: turf, sideline bands, 5- and 10-yard lines with `+10`/`+20` labels, 1-yard ticks
+along the hashes and sidelines, and the blue line of scrimmage. It uses the data's own coordinates, so
+anything you draw afterwards with `ax.plot` / `ax.scatter` lines up. Returns the `Axes`.
+
+```python
+import matplotlib.pyplot as plt
+from next_gen_scrapy import draw_field, plot
+
+ax = draw_field(ymin=-5, ymax=30)
+ax.scatter([-10, 12], [8, 22], color="white")            # your own marks, in field yards
+
+# side-by-side panels; `passes` here is match_to_pbp output, so pbp columns like `down` exist
+fig, axes = plt.subplots(1, 2, figsize=(12, 8))
+plot(passes[passes.down == 3], kind="pass", ax=axes[0], title="3rd down")
+plot(passes[passes.down != 3], kind="pass", ax=axes[1], title="Other downs")
+```
 
 ---
 
@@ -600,6 +668,9 @@ happened), and the share of plays that are `location_confident`:
 ---
 
 ## What's new
+
+0.4.0: **`plot`** and **`draw_field`** - passes, routes and carries on an NGS-style field, as the plays
+or as heatmaps (`pip install "next-gen-scrapy[plot]"`).
 
 0.3.1: `load_pbp_with_ftn` no longer fails for a season whose NGS participation or FTN data isn't
 published yet (e.g. the season in progress) - it warns and leaves those columns empty.

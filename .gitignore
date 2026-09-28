@@ -26,3 +26,4 @@ service/matched/
 # secrets
 .env
 .env.*
+!docs/*.png

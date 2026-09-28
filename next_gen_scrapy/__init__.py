@@ -25,6 +25,7 @@ from .carries import detect_carries
 from .passes import detect_blue_rings, detect_passes
 from .pbp_match import load_pbp_with_ftn, match_to_pbp
 from .player import get_carries, get_passes, get_routes
+from .plot import draw_field, plot
 from .reshape import to_paths
 from .routes import detect_routes
 
@@ -41,6 +42,9 @@ __all__ = [
     # matching a chart to real plays (needs nflreadpy - pip install "next-gen-scrapy[pbp]")
     "load_pbp_with_ftn",
     "match_to_pbp",
+    # plotting on an NGS-style field (needs matplotlib - pip install "next-gen-scrapy[plot]")
+    "plot",
+    "draw_field",
     # one-image-at-a-time API
     "CalibrationError",
     "Chart",
