@@ -712,6 +712,18 @@ happened), and the share of plays that are `location_confident`:
 
 ## What's new
 
+0.5.0: **Rebuilt route and carry readers.** Every line on a chart is now read at once - a stroke graph of the
+drawn lines, with all routes / carries chosen together by an integer program - so the chart's own counts always
+hold:
+
+- **Routes**: receptions, incompletions and touchdowns all right on 99.7% of charts (was 77%). Target counts for
+  2023+ charts are read off the chart's stat box. `detect_routes(method=...)` picks the reader.
+- **Carries**: 94% of carry ends within 2 yards of the play-by-play yards gained (was 86%), counts right on 99.9%
+  of charts, and every carry's colour now fits where it ends. `detect_carries(method=...)` picks the reader.
+- New **`gap`** column on routes and carries: the rare TD ring NGS draws with no line leading into it is reached
+  by a straight jump, flagged so it can be filtered out. `chart_qc.csv` records which reader read each chart.
+- Requires `scipy>=1.9`.
+
 0.4.0: **`plot`** and **`draw_field`** - passes, routes and carries on an NGS-style field, as the plays
 or as heatmaps (`pip install "next-gen-scrapy[plot]"`).
 
