@@ -230,6 +230,7 @@ One row per point along each route (0.5 yd spacing, ordered from the start of th
 | `route_type` | `COMPLETE` (white line) or `INCOMPLETE` (grey line) |
 | `touchdown` | Route ends in a touchdown ring |
 | `start_ok` | `False` if the start couldn't be traced back to the line of scrimmage (starts > 1 yd ahead of it; ~6% of routes) |
+| `gap` | `True` if part of the route is a straight jump the chart doesn't draw: a TD ring NGS drew with no line leading into it (~0.7% of charts), joined to the route that most plausibly scored |
 | `point` | 0, 1, 2 ... along the route |
 | `segment` | `route` or `after_catch` (the green yards-after-catch part) |
 | `x_coord`, `y_coord` | The point |
@@ -246,6 +247,7 @@ One row per point along each carry, from the backfield to where the runner was s
 | `gain_class` | Line colour: `LOSS` (red, < 0), `SHORT` (yellow, 0-5 yds), `LONG` (green, 6+ yds or TD) |
 | `touchdown`, `fumble_lost` | Ends in a touchdown / lost-fumble ring |
 | `handoff_ok` | `False` if the line couldn't be followed back to a handoff behind the LOS (~0.4% of carries) |
+| `gap` | `True` if part of the carry is a straight jump the chart doesn't draw: a TD ring with no line reaching it (~1% of charts), joined to the green carry that most plausibly scored |
 | `point`, `x_coord`, `y_coord` | The point |
 
 ### `chart_qc.csv`
@@ -564,12 +566,22 @@ Pixel centres of blue touchdown rings on any chart type (`hsv` = the image in HS
 
 ### `detect_routes`, `route_alternatives`
 
-#### `detect_routes(image, expected=None) -> (routes, info)`
+#### `detect_routes(image, expected=None, method="best") -> (routes, info)`
 
-Traces every route. `expected = {"receptions", "touchdowns", "targets", "max_yards"}` (targets bounds the grey
-routes; `max_yards` - the game's receiving yards - caps how deep one route can be). Returns a list of
-`dict(route_type, td, pts, seg, start_ok)` (`pts` = `Nx2` yards, `seg` = `route` / `after_catch` per point) and
-an `info` dict (`depth_yd`, piece counts, orphan green segments, TD rings, glyphs removed, deep truncations).
+Traces every route. `expected = {"receptions", "touchdowns", "targets", "max_yards"}` (targets set how many grey
+routes to look for - when they're missing, 2023+ charts have them printed in the stat box and they are read from
+there; `max_yards` - the game's receiving yards - caps how deep one route can be). Returns a list of
+`dict(route_type, td, pts, seg, start_ok, gap)` (`pts` = `Nx2` yards, `seg` = `route` / `after_catch` per point,
+`gap` = the route includes an undrawn jump into a TD ring; the tracer never sets it) and
+an `info` dict (`method` = which reader produced it, `depth_yd`, TD rings, deep truncations, ...).
+
+`method`: `"graph"` reads every route at once from one stroke graph of all lines (`route_graph.py`); `"layers"`
+does the same from one skeleton per colour, which keeps lines of different colours whole where they touch or
+overlap (an after-catch run coming back along its own route, a grey route sharing a white route's stem);
+`"tracer"` is the original per-colour tracer; `"best"` (default) tries them in that order, stops as soon as one
+explains the chart perfectly, and otherwise keeps the reading that explains it best
+(`routes.reading_score`: counts vs the metadata, share of drawn line pixels covered, share covered by a route of
+the matching colour, penalties for impossible structure).
 
 #### `next_gen_scrapy.routes.route_alternatives(image, expected, max_alts=40) -> [(geo_cost, routes, info), ...]`
 
@@ -579,11 +591,18 @@ Used by [`retrace_routes`](#re-reading-tangled-route-charts-retrace_routes).
 
 ### `detect_carries`
 
-#### `detect_carries(image, expected=None) -> (carries, info)`
+#### `detect_carries(image, expected=None, method="best") -> (carries, info)`
 
 Traces every carry. `expected = {"carries", "touchdowns", "max_yards"}`. Returns a list of
-`dict(color, td, fumble, handoff_ok, pts)` (`color` = `LOSS` / `SHORT` / `LONG`, `pts` in yards, starting in the
-backfield) and an `info` dict (`depth_yd`, `n_lines`, `n_td_rings`, `n_fumble_rings`, deep truncations).
+`dict(color, td, fumble, handoff_ok, pts, gap)` (`color` = `LOSS` / `SHORT` / `LONG`, `pts` in yards, starting in
+the backfield; `gap` as for routes, never set by the tracer) and an `info` dict (`method`, `depth_yd`, `n_lines`,
+`n_td_rings`, `n_fumble_rings`, deep truncations).
+
+`method`: `"layers"` reads every carry at once from one stroke graph per colour (`carry_graph.py`); `"graph"` does
+the same from one skeleton of all lines; `"tracer"` is the original line tracer. `"best"` (the default) keeps the
+`"layers"` reading unless it fails a sanity check (counts, each carry's colour vs where it ends, line coverage),
+in which case it also tries the other two and keeps the reading that best explains the chart. Without a carries
+count only the tracer runs.
 
 ---
 
@@ -608,14 +627,38 @@ grid to about 0.02 yd. Then:
   Overlapping rings are separated using the completion/touchdown/interception counts from the metadata - those
   counts are exact, so the job is to place that many rings rather than re-count them. Touchdown arcs and the LOS
   bar are excluded.
-- **Routes and carries** (`paths.py` + `routes.py` / `carries.py`): the drawn lines are skeletonised, split at
-  junctions and re-joined through crossings by the smoothest continuation, bridging gaps where one line passes
-  under another. After-catch (green) segments are attached to their route; touchdown and lost-fumble rings to the
-  line they end. Lines sharing a start point are separated, and the metadata counts merge stray fragments.
+- **Carries** (`carry_graph.py`): each colour is skeletonised on its own (a carry is one colour from handoff to
+  tackle), and NGS's drawing order - red, then yellow, then green on top - says where a line can be hidden: a red
+  line only under yellow or green, a yellow line only under green. Pieces of one line are joined across such
+  stretches by smooth curves; V-shaped tips behind the LOS (two carries taken at one spot) become nodes. Candidate
+  carries run from a handoff (deep behind the LOS) to a line end whose depth fits the colour - red at or behind the
+  LOS, yellow 0-5 yards, green 5+ or a TD ring - and an integer program picks all of them together: #carries and
+  #TDs from the metadata, every line covered, every line end explained, each lost-fumble ring ending one carry,
+  with costs for implausible shapes (shallow handoffs, carries running behind their own handoff, tiny "carries"
+  that are really glimpses of a line under the bundle, losses deeper than ~2.5 yards).
+- **Original carry and route tracers** (`paths.py` + `carries.py` / `routes.py`): the drawn lines are
+  skeletonised, split at junctions and re-joined through crossings by the smoothest continuation, bridging gaps
+  where one line passes under another. After-catch (green) segments are attached to their route; touchdown and
+  lost-fumble rings to the line they end. Lines sharing a start point are separated, and the metadata counts
+  merge stray fragments.
+- **Routes** (`route_graph.py`): every drawn line - white route, grey incomplete route, green after-catch run -
+  goes into a stroke graph (crossings, line ends and colour changes are its nodes; a white -> green change is a
+  catch point; every TD ring is a node a completed route can end on), built either from one skeleton of all lines
+  or from one skeleton per colour, with optional bridges wherever a line is hidden: under a TD ring, the LOS bar,
+  the TD label or another line, or at the catch seam. A line end that stops short of another line may attach to
+  it, and dim, thin far-away after-catch runs are kept whole. Grey vs white is decided by stroke-centre brightness, so the very light
+  grey of some 2023+ charts isn't read as white. Candidate routes are the cheapest smooth paths from every possible
+  start near the LOS to every line end, and all routes are then chosen together by an integer program: every
+  stroke covered, every loose end explained, #completed = receptions, #incomplete = targets - receptions,
+  #ending on a ring = touchdowns, least turning and colour mismatch. Now and then NGS draws a TD ring (perhaps with
+  a short piece of the run into it) but no line leading to it; when the TD count needs it, a completed route may
+  then jump to it in a straight line, at a high cost, and the route is flagged `gap`. `detect_routes` keeps this
+  reading or the tracer's, whichever explains the chart better.
 
-Counts come from the chart metadata plus, for route charts, the **target count** from the NGS receiving
-statboard (merged in by `ngs-scrape`). The statboard omits low-volume players, so about 13% of route charts
-have no target count and fall back to receptions only.
+Counts come from the chart metadata plus, for route charts, the **target count**: read off the chart's own stat
+box on 2023+ charts (`statbox.py`), otherwise from the NGS receiving statboard (merged in by `ngs-scrape`). The
+statboard omits low-volume players, so about 13% of pre-2023 route charts have no target count and fall back to
+receptions only.
 
 ---
 

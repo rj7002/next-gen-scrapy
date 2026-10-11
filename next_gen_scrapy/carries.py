@@ -54,22 +54,118 @@ def detect_red_rings(red_mask, hsv):
 MAX_HANDOFF_Y = 0.5          # a handoff is always behind the line of scrimmage
 
 
-def detect_carries(image, expected=None):
+def detect_carries(image, expected=None, method="best"):
     """
     `image` is a file path or an already-decoded BGR array (e.g. from cv2.imdecode).
-    `expected` (optional): {"carries": n, "touchdowns": n} from the chart metadata; used to merge
-    fragments when more lines than carries are found.
+    `expected` (optional): {"carries": n, "touchdowns": n} from the chart metadata - how many lines the chart
+    drew and how many end on a TD ring.
     `expected["max_yards"]` (optional): the player's total rushingYards for the game, from the same
     chart metadata - an extra, independent cap on top of the chart's own calibration (see
     routes.resample_field). Looser than for routes/passes: an individual carry can in principle run
     longer than the game total if other carries lost yardage, but it still catches gross errors.
+    `method`: "graph" / "layers" read all lines at once (carry_graph: a stroke graph of every line, all carries
+    chosen together by an integer program so the counts hold and each carry's colour matches where it ends);
+    "tracer" follows each colour separately and merges pieces; "best" (default) reads with layers and keeps
+    that unless it fails a sanity check (counts, colour vs end depth, line coverage - carry_score), then also
+    tries graph and tracer and keeps the reading that best explains the chart. Without a carries count only
+    the tracer runs.
     Returns (carries, info); carries = list of dict(color, td, fumble, handoff_ok, pts (Nx2 field yd)).
     handoff_ok is False if the line still starts past the line of scrimmage (its start could not be traced).
+    info["method"] says which reader produced the result.
     """
+    im = K.read_image(image)
+    lay = K.calibrate(im)
+    if method == "tracer" or expected is None or expected.get("carries") is None:
+        return _detect_carries_tracer(im, expected, lay)
+    if method in ("graph", "layers"):
+        return _detect_carries_graph(im, expected, lay, method)
+    ctx = carry_score_context(im, lay)
+    best = None
+    for name in ("layers", "graph", "tracer"):
+        try:
+            reading = _detect_carries_tracer(im, expected, lay) if name == "tracer" else \
+                _detect_carries_graph(im, expected, lay, name)
+        except Exception:
+            continue
+        score, good = carry_score(reading[0], expected, lay, ctx)
+        if best is None or score > best[0]:
+            best = (score, reading)
+        if good:
+            break
+    return best[1] if best is not None else _detect_carries_tracer(im, expected, lay)
+
+
+def _detect_carries_graph(im, expected, lay, method="graph"):
+    from . import carry_graph as CG
+    mx = expected.get("max_yards")
+    found, info = CG.read_carries(im, expected, mode="layers" if method == "layers" else "union", lay=lay)
+    out, n_trunc, n_drop = [], 0, 0
+    for c in found:
+        pts, truncated = resample_field(lay, c["px"], ceiling=None if mx is None else mx + 10)
+        n_trunc += truncated
+        if len(pts) < 2:
+            n_drop += 1
+            continue
+        out.append(dict(color=c["color"], td=c["td"], fumble=c["fumble"], handoff_ok=bool(pts[0][1] <= MAX_HANDOFF_Y),
+                        pts=pts, gap=c["gap"]))
+    out.sort(key=lambda c: (c["pts"][0][0], c["pts"][0][1]))
+    return out, dict(method=method, depth_yd=round(lay.max_reliable_yard, 1), n_lines=len(found),
+                     n_td_rings=info["n_td_rings"], n_fumble_rings=info["n_fumble_rings"],
+                     n_deep_truncated=n_trunc, n_deep_dropped=n_drop,
+                     uncovered=len(info["dbg"].get("uncovered", [])), unexplained=len(info["dbg"].get("unexplained", [])))
+
+
+def carry_score_context(im, lay):
+    from . import carry_graph as CG
+    from skimage.morphology import skeletonize
+    hsv = cv2.cvtColor(im, cv2.COLOR_BGR2HSV)
+    m = CG.masks(hsv, lay)
+    col = np.full(im.shape[:2], -1, np.int8)
+    for c in (CG.LONG, CG.SHORT, CG.LOSS):
+        col[m[c]] = c
+    union = cv2.morphologyEx((col >= 0).astype(np.uint8), cv2.MORPH_OPEN, np.ones((2, 2), np.uint8)).astype(bool)
+    return dict(col=col, union=union, sk=skeletonize(union))
+
+
+GOOD_COVERAGE, GOOD_AGREEMENT = 0.85, 0.93
+
+
+def carry_score(carries, expected, lay, ctx, detail=True):
+    """
+    How well a reading explains its chart, from the chart alone: carries / TD counts vs the metadata, the share
+    of drawn line pixels some carry covers, the share of covered pixels whose carry has their colour, and the
+    share of carries whose colour fits where they end (red at / behind the LOS, yellow 0-5 yd, green 5+ or TD).
+    Returns (score, good): good = counts right, every carry's colour fits its end, and the line pixels well
+    explained - detect_carries(method="best") stops at the first good reading.
+    """
+    from . import carry_graph as CG
+    ids = {"LOSS": CG.LOSS, "SHORT": CG.SHORT, "LONG": CG.LONG}
+    col, union, sk = ctx["col"], ctx["union"], ctx["sk"]
+    drawn = {c: np.zeros(union.shape, np.uint8) for c in ids.values()}
+    for c in carries:
+        px = np.round(lay.field_to_img(np.asarray(c["pts"], float))).astype(int)
+        cv2.polylines(drawn[ids[c["color"]]], [px.reshape(-1, 1, 2)], False, 1, 9)
+    covered = (drawn[CG.LOSS] | drawn[CG.SHORT] | drawn[CG.LONG]).astype(bool)
+    n = sk.sum()
+    coverage = covered[sk].sum() / n if n > 30 else 0.0
+    hit = sk & covered
+    agreement = sum((hit & (col == c) & drawn[c].astype(bool)).sum() for c in drawn) / hit.sum() if hit.sum() > 30 else 0.0
+    n_exp, td = expected.get("carries"), expected.get("touchdowns")
+    car_ok = n_exp is not None and len(carries) == n_exp
+    td_ok = td is None or sum(bool(c["td"]) for c in carries) == td
+    depth = [CG.depth_ok(ids[c["color"]], float(c["pts"][-1][1]), bool(c["td"])) for c in carries]
+    depth_frac = float(np.mean(depth)) if depth else 0.0
+    bad_handoff = sum(not c.get("handoff_ok", True) for c in carries)
+    score = 5.0 * car_ok + 3.0 * td_ok + 10.0 * coverage + 10.0 * agreement + 5.0 * depth_frac - 0.2 * bad_handoff
+    good = bool(car_ok and td_ok and coverage >= GOOD_COVERAGE and agreement >= GOOD_AGREEMENT and all(depth))
+    return float(score), good
+
+
+def _detect_carries_tracer(image, expected=None, lay=None):
     im = K.read_image(image)
     hsv = cv2.cvtColor(im, cv2.COLOR_BGR2HSV)
     ceiling = None if expected is None else expected.get("max_yards")
-    lay = K.calibrate(im)
+    lay = lay or K.calibrate(im)
     blue_rings = detect_blue_rings(hsv, lay, None if expected is None else expected.get("touchdowns"))
     masks = carry_masks(hsv, lay, blue_rings)
     red_rings = detect_red_rings(masks["LOSS"], hsv)
@@ -141,8 +237,9 @@ def detect_carries(image, expected=None):
                 continue
         o["pts"] = pts
         o["handoff_ok"] = bool(pts[0][1] <= MAX_HANDOFF_Y)
+        o["gap"] = False
         kept.append(o)
     out = kept
     out.sort(key=lambda c: (c["pts"][0][0], c["pts"][0][1]))
-    return out, dict(depth_yd=round(lay.max_reliable_yard, 1), n_lines=len(lines), n_td_rings=len(blue_rings),
+    return out, dict(method="tracer", depth_yd=round(lay.max_reliable_yard, 1), n_lines=len(lines), n_td_rings=len(blue_rings),
                      n_fumble_rings=len(red_rings), n_deep_truncated=n_deep_truncated, n_deep_dropped=n_deep_dropped)

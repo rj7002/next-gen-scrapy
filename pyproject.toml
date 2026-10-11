@@ -35,3 +35,6 @@ ngs-extract = "next_gen_scrapy.extract:main"
 
 [tool.setuptools.packages.find]
 include = ["next_gen_scrapy*"]
+
+[tool.setuptools.package-data]
+next_gen_scrapy = ["statbox_digits.npz"]

@@ -85,14 +85,18 @@ def process_route(image_path, meta):
     rows = []
     for i, r in enumerate(routes, 1):
         for j, ((x, y), seg) in enumerate(zip(r["pts"], r["seg"])):
-            rows.append(dict(base, route_id=i, route_type=r["route_type"], touchdown=r["td"], start_ok=r["start_ok"], point=j,
-                             segment=seg, x_coord=round(float(x), 2), y_coord=round(float(y), 2)))
+            rows.append(dict(base, route_id=i, route_type=r["route_type"], touchdown=r["td"], start_ok=r["start_ok"],
+                             gap=bool(r.get("gap", False)), point=j, segment=seg,
+                             x_coord=round(float(x), 2), y_coord=round(float(y), 2)))
     n_c = sum(r["route_type"] == "COMPLETE" for r in routes)
     qc = dict(base, depth_yd=info["depth_yd"], expected_receptions=meta["receptions"], detected_complete=n_c,
               expected_targets=meta.get("targets"), detected_routes=len(routes),
               detected_incomplete=len(routes) - n_c, expected_td=meta["touchdowns"], detected_td_rings=info["n_td_rings"],
               n_deep_truncated=info["n_deep_truncated"], n_deep_dropped=info["n_deep_dropped"],
-              counts_ok=(n_c == meta["receptions"] and info["n_td_rings"] == meta["touchdowns"]))
+              detected_td_routes=sum(bool(r["td"]) for r in routes),
+              n_gap_routes=sum(bool(r.get("gap", False)) for r in routes),
+              counts_ok=(n_c == meta["receptions"] and sum(bool(r["td"]) for r in routes) == meta["touchdowns"]),
+              reader=info.get("method"))
     return rows, qc
 
 
@@ -105,11 +109,15 @@ def process_carry(image_path, meta):
     for i, c in enumerate(carries, 1):
         for j, (x, y) in enumerate(c["pts"]):
             rows.append(dict(base, carry_id=i, gain_class=c["color"], touchdown=c["td"], fumble_lost=c["fumble"],
-                             handoff_ok=c["handoff_ok"], point=j, x_coord=round(float(x), 2), y_coord=round(float(y), 2)))
+                             handoff_ok=c["handoff_ok"], gap=bool(c.get("gap", False)), point=j,
+                             x_coord=round(float(x), 2), y_coord=round(float(y), 2)))
     qc = dict(base, depth_yd=info["depth_yd"], expected_carries=meta["carries"], detected_carries=len(carries),
               expected_td=meta["touchdowns"], detected_td_rings=info["n_td_rings"],
               n_deep_truncated=info["n_deep_truncated"], n_deep_dropped=info["n_deep_dropped"],
-              counts_ok=(len(carries) == meta["carries"] and info["n_td_rings"] == meta["touchdowns"]))
+              detected_td_carries=sum(bool(c["td"]) for c in carries),
+              n_gap_carries=sum(bool(c.get("gap", False)) for c in carries),
+              counts_ok=(len(carries) == meta["carries"] and sum(bool(c["td"]) for c in carries) == meta["touchdowns"]),
+              reader=info.get("method"))
     return rows, qc
 
 

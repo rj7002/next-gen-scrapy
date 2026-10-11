@@ -16,9 +16,9 @@ import pandas as pd
 
 SCALAR_COLS = {
     "carry": ["season", "season_type", "week", "team", "esb_id", "name", "position",
-              "gain_class", "touchdown", "fumble_lost", "handoff_ok"],
+              "gain_class", "touchdown", "fumble_lost", "handoff_ok", "gap"],
     "route": ["season", "season_type", "week", "team", "esb_id", "name", "position",
-              "route_type", "touchdown", "start_ok"],
+              "route_type", "touchdown", "start_ok", "gap"],
 }
 
 
@@ -50,7 +50,7 @@ def to_paths(chart_df, kind):
     # esb_id is a groupby key (route_id/carry_id is only unique per player within a game, not
     # across the whole game - two receivers can each have "route #2"), so it comes back via
     # reset_index() already; dropped here to avoid a duplicate esb_id column.
-    scalar_cols = [c for c in SCALAR_COLS[kind] if c != "esb_id"]
+    scalar_cols = [c for c in SCALAR_COLS[kind] if c != "esb_id" and c in chart_df.columns]   # 'gap' is newer
 
     def _agg(g):
         g = g.sort_values("point")

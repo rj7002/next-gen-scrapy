@@ -13,6 +13,7 @@ import numpy as np
 
 from . import calib as K
 from . import paths as NP
+from . import statbox
 from .passes import detect_blue_rings
 
 RESAMPLE_YD = 0.5
@@ -101,26 +102,134 @@ def line_masks(im, rings, lay):
     return white, gray, green
 
 
-def detect_routes(image, expected=None):
+def detect_routes(image, expected=None, method="best"):
     """
     `image` is a file path or an already-decoded BGR array (e.g. from cv2.imdecode).
-    `expected` (optional): {"receptions": n, "touchdowns": n} from the chart metadata. If more white
-    fragments than receptions are found, the best-fitting fragments are merged until the counts agree.
+    `expected` (optional): {"receptions": n, "touchdowns": n, "targets": n} from the chart metadata. Targets
+    tell the reader how many grey (incomplete) routes to look for; when they're missing, 2023+ charts have
+    them printed in the stat box and they are read from there (statbox.read_stats).
     `expected["max_yards"]` (optional): the player's total receivingYards for the game, from the same
     chart metadata - a single route can never be deeper than that, which is a useful independent check
     on top of the chart's own calibration (see resample_field).
+    `method`: "graph" reads all routes together from one stroke graph of every line (route_graph); "layers"
+    does the same from one skeleton per colour (for lines of different colours that touch or overlap);
+    "tracer" traces each colour separately and patches crossings up afterwards (the original reader); "best"
+    (default) tries graph, layers, tracer in that order, stops as soon as a reading explains the chart
+    perfectly, and otherwise keeps the reading that explains it best (reading_score).
     Returns (routes, info). routes: list of dict(route_type, td, pts (Nx2 field yd), seg (N labels)).
     route_type is COMPLETE (white line, maybe with after-catch) or INCOMPLETE (gray line).
     """
-    ctx = _prepare(image, expected)
-    return _finalize(ctx, ctx["reconcile"](ctx["white_pieces"], ctx["receptions"]))
+    from . import route_graph as RG
+    im = K.read_image(image)
+    expected = dict(expected or {})
+    stats = statbox.read_stats(im)
+    if stats:
+        for k, sk in (("receptions", "receptions"), ("touchdowns", "td")):
+            if expected.get(k) is None and stats.get(sk) is not None:
+                expected[k] = stats[sk]
+        if stats.get("targets") is not None and expected.get("receptions") == stats.get("receptions"):
+            expected["targets"] = stats["targets"]        # the chart's own count of the lines it draws
+    lay = K.calibrate(im)
+    if method == "tracer":
+        return _detect_routes_tracer(im, expected, lay)
+    hsv = cv2.cvtColor(im, cv2.COLOR_BGR2HSV)
+    pix = RG.line_colors(im, hsv, lay, RG.find_rings(hsv, lay, im.shape[:2]))
+    if method in ("graph", "layers"):
+        return _detect_routes_graph(im, expected, lay, pix, method)
+    ctx = score_context(pix)
+    best = None
+    for name in ("graph", "layers", "tracer"):
+        try:
+            reading = _detect_routes_tracer(im, expected, lay) if name == "tracer" else \
+                _detect_routes_graph(im, expected, lay, pix, name)
+        except Exception:                                 # never lose a chart to one reader
+            continue
+        score, perfect = reading_score(reading[0], expected, im, lay, ctx=ctx, detail=True)
+        if best is None or score > best[0]:
+            best = (score, reading)
+        if perfect:
+            break
+    return best[1] if best is not None else _detect_routes_tracer(im, expected, lay)
 
 
-def _prepare(image, expected):
+def _detect_routes_tracer(image, expected, lay=None):
+    ctx = _prepare(image, expected, lay)
+    routes, info = _finalize(ctx, ctx["reconcile"](ctx["white_pieces"], ctx["receptions"]))
+    info["method"] = "tracer"
+    return routes, info
+
+
+def _detect_routes_graph(image, expected, lay=None, pix=None, method="graph"):
+    from . import route_graph
+    routes, gi = route_graph.read_routes(image, expected, mode="layers" if method == "layers" else "union",
+                                         lay=lay, pix=pix)
+    lay = gi["lay"]
+    keep = ("route_type", "td", "pts", "seg", "start_ok", "gap")
+    info = dict(method=method, depth_yd=round(lay.max_reliable_yard, 1), n_td_rings=len(gi["rings"]),
+                n_deep_truncated=sum(r["truncated"] for r in routes), n_deep_dropped=0,
+                uncovered=len(gi["dbg"].get("uncovered", [])), unexplained=len(gi["dbg"].get("unexplained", [])))
+    return [{k: r[k] for k in keep} for r in routes], info
+
+
+def score_context(pix):
+    """What reading_score needs from the chart itself (computed once, shared by every reading)."""
+    from skimage.morphology import skeletonize
+    col, union = pix[0], pix[1]
+    return dict(col=col, union=union, sk=skeletonize(union))
+
+
+def reading_score(routes, expected, image, lay, ctx=None, detail=False):
+    """
+    How well a reading explains its chart, from the chart alone: whether the route counts match the
+    metadata (receptions, targets - receptions, touchdowns), the share of drawn line pixels that some route
+    covers, and the share of covered pixels whose route type matches their colour (white = completed route,
+    grey = incomplete, green = after the catch). Small penalties for impossible structure.
+    detail=True returns (score, perfect): perfect = every count right, >= 98% coverage and colour agreement,
+    no impossible structure.
+    """
+    from . import route_graph as RG
+    if ctx is None:
+        im = K.read_image(image)
+        hsv = cv2.cvtColor(im, cv2.COLOR_BGR2HSV)
+        ctx = score_context(RG.line_colors(im, hsv, lay, RG.find_rings(hsv, lay, im.shape[:2])))
+    col, union, sk = ctx["col"], ctx["union"], ctx["sk"]
+    drawn = {c: np.zeros(union.shape, np.uint8) for c in (RG.WHITE, RG.GRAY, RG.GREEN)}
+    for r in routes:
+        px = np.round(lay.field_to_img(np.asarray(r["pts"], float))).astype(int)
+        seg = np.asarray(r["seg"])
+        for j in range(len(px) - 1):
+            c = RG.GREEN if seg[j] == "after_catch" else (RG.WHITE if r["route_type"] == "COMPLETE" else RG.GRAY)
+            cv2.line(drawn[c], tuple(px[j]), tuple(px[j + 1]), 1, 9)
+    covered = (drawn[RG.WHITE] | drawn[RG.GRAY] | drawn[RG.GREEN]).astype(bool)
+    n = sk.sum()
+    coverage = covered[sk].sum() / n if n > 30 else 0.0
+    hit = sk & covered
+    agree = sum((hit & (col == c) & drawn[c].astype(bool)).sum() for c in drawn)
+    agreement = agree / hit.sum() if hit.sum() > 30 else 0.0
+    comp = [r for r in routes if r["route_type"] == "COMPLETE"]
+    inc = [r for r in routes if r["route_type"] != "COMPLETE"]
+    rec, tg, td = expected.get("receptions"), expected.get("targets"), expected.get("touchdowns")
+    rec_ok = rec is not None and len(comp) == rec
+    inc_ok = (len(inc) == tg - rec) if (tg is not None and rec is not None) else None
+    td_ok = td is not None and sum(bool(r["td"]) for r in routes) == td
+    no_route = sum((np.asarray(r["seg"]) == "route").sum() < 2 for r in comp)
+    bad_start = sum(not r.get("start_ok", True) for r in routes)
+    inc_ac = sum((np.asarray(r["seg"]) == "after_catch").any() for r in inc)
+    score = 10.0 * rec_ok + 6.0 * (1.0 if inc_ok is None else inc_ok) + 6.0 * td_ok   # counts are exact: they dominate
+    score += 10.0 * coverage + 10.0 * agreement
+    score -= 2.0 * no_route + 0.2 * bad_start + 2.0 * inc_ac
+    if not detail:
+        return float(score)
+    perfect = bool(rec_ok and inc_ok is not False and td_ok and coverage >= 0.98 and agreement >= 0.98
+                   and not (no_route or bad_start or inc_ac))
+    return float(score), perfect
+
+
+def _prepare(image, expected, lay=None):
     """Calibrate the chart and trace its raw line pieces (white / grey / green), not yet reconciled."""
     im = K.read_image(image)
     hsv = cv2.cvtColor(im, cv2.COLOR_BGR2HSV)
-    lay = K.calibrate(im)
+    lay = lay or K.calibrate(im)
     ceiling = None if expected is None else expected.get("max_yards")
     rings = detect_blue_rings(hsv, lay, None if expected is None else expected.get("touchdowns"))
     white_m, gray_m, green_m = line_masks(im, rings, lay)
@@ -266,7 +375,7 @@ def _finalize(ctx, white):
     NP.attach_trunks(oriented, lay.img_to_field, MAX_START_Y)
     NP.attach_trunks(oriented, lay.img_to_field, MAX_START_Y, max_dist=70.0, min_align=0.0, passes=2)
 
-    if expected is not None:                    # still too many completed routes: drop tiny leftover slivers
+    if expected is not None and expected.get("receptions") is not None:   # still too many completed routes: drop tiny leftover slivers
         def yd_len(o):
             f = lay.img_to_field(o["px"])
             return float(np.linalg.norm(np.diff(f, axis=0), axis=1).sum())
@@ -307,7 +416,7 @@ def _finalize(ctx, white):
             d = np.linalg.norm(pts - split, axis=1)
             seg_f[int(np.argmin(d)):] = "after_catch"
         out.append(dict(route_type=o["route_type"], td=o["td"], pts=pts, seg=seg_f,
-                        start_ok=bool(pts[0][1] <= MAX_START_Y)))
+                        start_ok=bool(pts[0][1] <= MAX_START_Y), gap=False))
     out.sort(key=lambda r: (r["pts"][0][1], r["pts"][0][0]))
     return out, dict(depth_yd=round(lay.max_reliable_yard, 1), n_white=len(white), n_gray=len(gray), n_green=len(green), orphan_green=orphans,
                      n_td_rings=len(rings), n_label_glyphs=n_glyphs, n_deep_truncated=n_deep_truncated,

@@ -46,6 +46,7 @@ def _gather(kind, player, season, weeks, quiet):
               "weeks " + ", ".join(sorted(want_weeks)) if want_weeks else "every week"), flush=True)
 
     abbrs = _scrape.get_team_abbrs()          # {teamId -> abbreviation, e.g. "0610" -> "BUF"}
+    targets = {}                              # route charts: one line per target, so targets bound the grey routes
     found, all_names, matched_any = {}, set(), False
     for chart in _scrape.fetch_charts(kind, season):
         if _norm(chart["playerName"]) != _norm(player):
@@ -58,6 +59,11 @@ def _gather(kind, player, season, weeks, quiet):
         if not quiet:
             print("  downloading", week, chart["playerName"], flush=True)
         chart = dict(chart, team=abbrs.get(chart["teamId"], chart["teamId"]))
+        if kind == "route" and chart.get("targets") is None:
+            key = (chart["season"], chart["seasonType"], chart["week"])
+            if key not in targets:
+                targets[key] = _scrape.fetch_targets(*key)
+            chart["targets"] = targets[key].get(chart["esbId"])
         found[week] = (_scrape.fetch_chart_image(chart), chart)
 
     if not matched_any:
