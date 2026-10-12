@@ -595,15 +595,22 @@ cd service/web && npm install && npm run build && cd ../..
 uvicorn service.app:app --port 8000        # open http://127.0.0.1:8000
 ```
 
-Loading a player takes from a few seconds to about two minutes the first time, depending on how many charts
-they have and whether that season's play-by-play is already loaded. To work on the UI, run uvicorn with
+Players load from pre-read, pre-matched season files when the app can reach them: the
+[NFL-NGS-Tracking-Data](https://github.com/rj7002/NFL-NGS-Tracking-Data) pipeline publishes every season (and refreshes
+the current one daily) as assets of its `data` release. Charts in those files load in a couple of seconds; anything
+newer is read live. Set `NGS_DATA_TOKEN` to a GitHub token that can read that repo (it's private), or `NGS_DATA_REPO` to
+use another; without them every chart is read live, which takes from a few seconds to about two minutes the first time,
+depending on how many charts the player has and whether that season's play-by-play is already loaded. To work on the UI, run uvicorn with
 `--reload`, and `npm run dev` in `service/web` (Vite proxies `/api` to port 8000). The UI is React with
 [shadcn/ui](https://ui.shadcn.com) components.
 
 **Deploying it.** `deploy/huggingface/` holds a Docker setup for a [Hugging Face Space](https://huggingface.co/docs/hub/spaces-sdks-docker)
 (the free CPU tier is enough): after `hf auth login`, `deploy/huggingface/push.sh <you>/<space-name>` stages just the
 package and `service/` (no caches, data or `.env`) and pushes it; the Space builds the UI and starts the server on
-port 7860. Add `GEMINI_API_KEY` as a Space secret if you want the "ask" box. A local Big Data Bowl copy is never
+port 7860. Add `GEMINI_API_KEY` as a Space secret if you want the "ask" box. The deployed app runs with
+`NGS_API_GUARD=1`: `/api` then answers only the app's own page in a browser (same-site requests carrying the session
+cookie the page sets, rate-limited per visitor), so the API can't be scripted casually. Set `NGS_SESSION_SECRET` to
+keep sessions valid across restarts. A local Big Data Bowl copy is never
 uploaded, so a deployed app matches 2023-25 carries without tracking.
 
 ---

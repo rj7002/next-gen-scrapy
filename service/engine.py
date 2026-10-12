@@ -16,6 +16,7 @@ Results live in memory (a small LRU), keyed by (kind, player, season). Nothing i
 
 from __future__ import annotations
 
+import io
 import math
 import os
 import threading
@@ -29,6 +30,7 @@ from datetime import date
 
 import numpy as np
 import pandas as pd
+import requests
 
 from next_gen_scrapy import load_pbp_with_ftn, match_to_pbp
 from next_gen_scrapy import route_type as RT
@@ -120,6 +122,97 @@ def _route_targets(chart: dict) -> int | None:
         with _lock:
             _targets[key] = hit
     return hit.get(chart["esbId"])
+
+
+# --------------------------------------------------------------------------------------------- season data store
+# Pre-read, pre-matched seasons published by the data repo's pipeline (pipeline/update.py in NGS_DATA_REPO, as assets
+# of its `data` release; the season in progress is refreshed daily). A chart the store has - same image, with its
+# matches - loads from there in a second; anything newer is read live as before. NGS_DATA_TOKEN: a GitHub token that
+# can read NGS_DATA_REPO (needed while that repo is private); without it the app reads everything live.
+DATA_REPO = os.environ.get("NGS_DATA_REPO", "rj7002/NFL-NGS-Tracking-Data")
+DATA_TOKEN = os.environ.get("NGS_DATA_TOKEN")
+DATA_CHECK = 10 * 60          # how often to look for a newer release
+_assets: tuple[float, dict] = (0.0, {})
+data_status = "not checked yet"      # why the season data store is (un)available - shown in job notes and logged
+_store: dict[tuple, tuple] = {}       # (kind, season) -> (asset stamp, charts, readings, matched)
+_store_lock = threading.Lock()
+
+
+def _gh_headers(raw=False) -> dict:
+    h = {"Accept": "application/octet-stream" if raw else "application/vnd.github+json"}
+    if DATA_TOKEN:
+        h["Authorization"] = f"Bearer {DATA_TOKEN}"
+    return h
+
+
+def _release_assets() -> dict:
+    """{asset name: (api url, updated_at)} of the data release, re-checked every DATA_CHECK seconds."""
+    global _assets, data_status
+    if time.time() - _assets[0] < DATA_CHECK:
+        return _assets[1]
+    try:
+        r = requests.get(f"https://api.github.com/repos/{DATA_REPO}/releases/tags/data", headers=_gh_headers(), timeout=20)
+        found = {a["name"]: (a["url"], a["updated_at"]) for a in r.json().get("assets", [])} if r.ok else {}
+        if r.ok:
+            status = f"{len(found)} files in {DATA_REPO}'s data release"
+        else:
+            hint = "no NGS_DATA_TOKEN set" if not DATA_TOKEN else "NGS_DATA_TOKEN can't read it"
+            status = f"can't read {DATA_REPO}'s data release (GitHub said {r.status_code}: {hint})"
+    except requests.RequestException as e:
+        found, status = _assets[1], f"couldn't reach GitHub ({type(e).__name__})"
+    if status != data_status:
+        print(f"season data: {status}", flush=True)
+        data_status = status
+    _assets = (time.time(), found)
+    return found
+
+
+def season_store(kind: str, season: int):
+    """(charts, readings, matched) for a season from the data release, or None if it isn't there."""
+    assets = _release_assets()
+    names = [f"{part}_{kind}_{season}.parquet" for part in ("charts", "readings", "matched")]
+    if not all(n in assets for n in names):
+        return None
+    stamp = tuple(assets[n][1] for n in names)
+    with _store_lock:
+        hit = _store.get((kind, season))
+    if hit and hit[0] == stamp:
+        return hit[1:]
+    try:
+        frames = []
+        for n in names:
+            r = requests.get(assets[n][0], headers=_gh_headers(raw=True), timeout=120)
+            r.raise_for_status()
+            frames.append(pd.read_parquet(io.BytesIO(r.content)))
+    except Exception:
+        traceback.print_exc()
+        return hit[1:] if hit else None
+    with _store_lock:
+        _store[(kind, season)] = (stamp, *frames)
+    return tuple(frames)
+
+
+def _stored(kind: str, charts: list[dict], p: pd.DataFrame):
+    """(chart rows, matched rows with play-by-play attached, covered chart keys) for the charts the data release
+    already holds (same image, matched), or None."""
+    st = season_store(kind, int(charts[0]["season"])) if charts else None
+    if st is None:
+        return None
+    ch, rd, mt = st
+    image = dict(zip(zip(ch["game_id"].astype(int), ch["esb_id"]), ch["image"]))
+    have_m = set(zip(mt["chart_game_id"].astype(int), mt["chart_esb_id"])) if len(mt) else set()
+    covered = {(int(c["gameId"]), c["esbId"]) for c in charts
+               if image.get((int(c["gameId"]), c["esbId"])) == c.get("imageName") and (int(c["gameId"]), c["esbId"]) in have_m}
+    if not covered:
+        return None
+    rows = rd[pd.Series(list(zip(rd["game_id"].astype(int), rd["esb_id"])), index=rd.index).isin(covered)]
+    m = mt[pd.Series(list(zip(mt["chart_game_id"].astype(int), mt["chart_esb_id"])), index=mt.index).isin(covered)].copy()
+    for c in ("path_x", "path_y"):
+        if c in m:
+            m[c] = [np.asarray(v, float) if v is not None else None for v in m[c]]
+    from next_gen_scrapy.pbp_match import _attach_pbp_columns
+    m = _attach_pbp_columns(m, p) if len(m) else m
+    return rows.reset_index(drop=True), m.reset_index(drop=True), covered
 
 
 # --------------------------------------------------------------------------------------------- pbp cache
@@ -427,6 +520,9 @@ class Job:
     created: float = field(default_factory=time.time)
     pending: list = field(default_factory=list)   # games charted but not in nflverse's play-by-play yet
     undrawn: pd.DataFrame | None = None           # passes only: incompletions NGS didn't draw (estimated spots)
+    all_charts: list = field(default_factory=list)  # every chart of the job (some may come from the season store)
+    stored: tuple | None = None                   # (chart rows, matched rows) from the season data store
+    pbp_ref: pd.DataFrame | None = None
 
     def public(self):
         return dict(id=self.id, kind=self.kind, name=self.name, season=self.season, status=self.status,
@@ -472,31 +568,38 @@ def _run(job: Job, charts: list[dict]):
     try:
         from next_gen_scrapy.player import _week_sort_key
         charts = sorted(charts, key=lambda c: _week_sort_key(S.week_label(c)))
-        job.status = "running"
-        if job.kind == "carry":                       # carries are read with the back's plays in hand (see _read_charts)
-            job.stage, job.done, job.total = "Loading play-by-play", 0, 0
-            _, p = pbp(job.season, need_games=[c["gameId"] for c in charts])
-            plays_for = _carry_plays(p, job.esb_id)
-        job.stage, job.total, job.done = "Reading charts", len(charts), 0
+        job.status, job.all_charts = "running", charts
+        job.stage, job.done, job.total = "Loading play-by-play", 0, 0
+        _, p = pbp(job.season, need_games=[c["gameId"] for c in charts])
+        job.pbp_ref = p
+        # charts the season data store already read and matched load from there; only the rest are read live
+        job.stage = "Loading season data"
+        stored = _stored(job.kind, charts, p)
+        covered = stored[2] if stored else set()
+        job.stored = stored[:2] if stored else None
+        live = [c for c in charts if (int(c["gameId"]), c["esbId"]) not in covered]
+        notes = [f"{len({k[0] for k in covered})} games loaded from the season data (updated daily)"] if covered else \
+            ([] if data_status.endswith("data release") else [f"Season data unavailable - {data_status}; charts read live"])
+        if not live:
+            _publish(job, charts, pd.DataFrame(), pd.DataFrame(), notes)
+            job.status, job.stage = "done", "Done"
+            return
+        plays_for = _carry_plays(p, job.esb_id) if job.kind == "carry" else None   # carries are read with plays in hand
+        job.stage, job.total, job.done = "Reading charts", len(live), 0
         images = {} if job.kind == "route" else None
-        chart_df, notes = _read_charts(job.kind, charts, lambda i: setattr(job, "done", i),
-                                       plays_for if job.kind == "carry" else None, keep=images)
-        if job.kind != "carry":
-            job.stage, job.done, job.total = "Loading play-by-play", 0, 0
-            _, p = pbp(job.season, need_games=[c["gameId"] for c in charts])
+        chart_df, read_notes = _read_charts(job.kind, live, lambda i: setattr(job, "done", i), plays_for, keep=images)
+        notes += read_notes
         have = set(p["old_game_id"].astype(str))
         job.pending = [dict(week=S.week_label(c), game_id=c["gameId"],
                             plays=int((chart_df["game_id"].astype(str) == str(c["gameId"])).sum()) if len(chart_df) else 0)
-                       for c in charts if str(c["gameId"]) not in have]
+                       for c in live if str(c["gameId"]) not in have]
         job.stage = "Matching to play-by-play"
         trk = _bdb_tracking(job.season) if job.kind == "carry" else None
         matched = match_to_pbp(chart_df, p, job.kind, tracking=trk) if len(chart_df) else pd.DataFrame()
-        if job.kind == "pass":
-            job.undrawn = _undrawn(job, charts, p, matched)
         _publish(job, charts, chart_df, matched, notes)
         if job.kind == "pass" and len(matched):
             job.status, job.stage = "refining", "Pinning passes with receivers' route charts"
-            routes, route_images = _receiver_routes(job, charts)
+            routes, route_images = _receiver_routes(job, live)
             if routes is not None and len(routes):
                 from next_gen_scrapy.retrace import retrace_routes
                 job.stage, job.done, job.total = "Re-reading tangled route charts", 0, 0
@@ -504,11 +607,10 @@ def _run(job: Job, charts: list[dict]):
                 job.stage = "Re-matching passes"
                 rm = match_to_pbp(routes, p, "route")
                 matched2 = match_to_pbp(chart_df, p, "pass", route_matches=rm)
-                job.undrawn = _undrawn(job, charts, p, matched2)
                 notes = notes + [f"{rm['chart_esb_id'].nunique()} receivers' route charts used to pin passes"]
                 _publish(job, charts, chart_df, matched2, notes)
         if job.kind == "route" and len(matched):
-            _refine_routes(job, charts, chart_df, p, images, notes)
+            _refine_routes(job, live, chart_df, p, images, notes)
         job.status, job.stage = "done", "Done"
     except Exception as e:
         job.status, job.error, job.stage = "error", f"{type(e).__name__}: {e}", "Failed"
@@ -558,6 +660,15 @@ def _receiver_routes(job: Job, qb_charts: list[dict]) -> tuple[pd.DataFrame | No
 
 
 def _publish(job: Job, charts, chart_df, matched, notes):
+    """Show the job's current result: what was read live (chart_df, matched) plus whatever came from the season
+    data store, for every chart of the job."""
+    charts = job.all_charts or charts
+    if job.stored is not None:
+        s_rows, s_matched = job.stored
+        chart_df = pd.concat([s_rows, chart_df], ignore_index=True) if len(chart_df) else s_rows
+        matched = pd.concat([s_matched, matched], ignore_index=True) if len(matched) else s_matched
+    if job.kind == "pass" and job.pbp_ref is not None:
+        job.undrawn = _undrawn(job, charts, job.pbp_ref, matched)
     plays = _plays_json(job.kind, matched, chart_df) + _undrawn_json(job.kind, job.undrawn)
     first = charts[0]
     job.frame = matched

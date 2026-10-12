@@ -15,14 +15,19 @@ UI development: `uvicorn service.app:app --port 8000 --reload` and, in service/w
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import io
 import os
+import secrets
+import threading
+import time
 from pathlib import Path
 from typing import Literal
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -50,7 +55,85 @@ app = FastAPI(
     title="next-gen-scrapy explorer",
     description="Next Gen Stats charts read live by the next_gen_scrapy package and matched to play-by-play.",
     version="3.0.0",
+    docs_url=None, redoc_url=None, openapi_url=None,     # don't publish a map of the API
 )
+
+# --------------------------------------------------------------------------------------------- API guard
+# With NGS_API_GUARD=1 (the deployed app), /api answers only the app's own page running in a browser: requests must
+# come from the same site (browsers send Sec-Fetch-Site; scripts and other sites don't, or send something else) and
+# carry the session cookie the page sets, and each visitor is rate-limited. A determined user could still replay a
+# browser session - nothing the browser can request is truly hidden - but casual and scripted use is refused.
+API_GUARD = os.environ.get("NGS_API_GUARD", "0") == "1"
+SESSION_SECRET = (os.environ.get("NGS_SESSION_SECRET") or secrets.token_hex(32)).encode()
+SESSION_COOKIE, SESSION_TTL = "ngs_s", 12 * 3600
+RATE = {"/api/load": (30, 600), "/api/ask": (60, 600), "": (600, 60)}   # path prefix: (requests, per seconds)
+_hits: dict[tuple[str, str], list[float]] = {}
+_hits_lock = threading.Lock()
+
+
+def _sign(ts: int) -> str:
+    return hmac.new(SESSION_SECRET, str(ts).encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def _session_ok(token: str | None) -> bool:
+    try:
+        ts, sig = token.split(".", 1)
+        return time.time() - int(ts) < SESSION_TTL and hmac.compare_digest(sig, _sign(int(ts)))
+    except (AttributeError, ValueError):
+        return False
+
+
+def _set_session(request: Request, response: Response) -> None:
+    ts = int(time.time())
+    https = request.headers.get("x-forwarded-proto", request.url.scheme) == "https"
+    # over https, also usable when the page is embedded in another site's frame (Hugging Face shows a Space inside
+    # huggingface.co): SameSite=None needs Secure, and Partitioned keeps the cookie to that one embedding
+    if https:
+        response.set_cookie(SESSION_COOKIE, f"{ts}.{_sign(ts)}", max_age=SESSION_TTL, httponly=True,
+                            samesite="none", secure=True, partitioned=True)
+    else:
+        response.set_cookie(SESSION_COOKIE, f"{ts}.{_sign(ts)}", max_age=SESSION_TTL, httponly=True, samesite="lax")
+
+
+def _rate_ok(request: Request) -> bool:
+    ip = (request.headers.get("x-forwarded-for") or (request.client.host if request.client else "?")).split(",")[0].strip()
+    path = request.url.path
+    key = next(k for k in RATE if path.startswith(k))
+    limit, window = RATE[key]
+    now = time.time()
+    with _hits_lock:
+        hits = [t for t in _hits.get((ip, key), []) if now - t < window]
+        if len(hits) >= limit:
+            _hits[(ip, key)] = hits
+            return False
+        hits.append(now)
+        _hits[(ip, key)] = hits
+    return True
+
+
+@app.middleware("http")
+async def api_guard(request: Request, call_next):
+    if not API_GUARD:
+        return await call_next(request)
+    path = request.url.path
+    if path.startswith("/api/"):
+        if request.headers.get("sec-fetch-site") != "same-origin":
+            return JSONResponse({"detail": "Not available."}, status_code=403)
+        if not _session_ok(request.cookies.get(SESSION_COOKIE)):
+            return JSONResponse({"detail": "Session expired - reload the page."}, status_code=401)
+        if not _rate_ok(request):
+            return JSONResponse({"detail": "Too many requests - slow down a little."}, status_code=429)
+        return await call_next(request)
+    response = await call_next(request)
+    if not path.startswith("/assets/") and not _session_ok(request.cookies.get(SESSION_COOKIE)):
+        _set_session(request, response)            # the page itself (and /session): hand out a session
+    return response
+
+
+@app.get("/session", include_in_schema=False)
+def session():
+    """The page calls this to renew an expired session (the guard middleware sets the cookie)."""
+    return Response(status_code=204)
 
 
 @app.get("/api/seasons")

@@ -106,23 +106,32 @@ async function json<T>(r: Response): Promise<T> {
   return r.json() as Promise<T>
 }
 
+/** fetch for /api: the deployed server answers only this page's session; if that has expired (a tab left open,
+ * the server restarted), get a new one and try once more. */
+async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
+  const r = await fetch(url, { credentials: "same-origin", ...init })
+  if (r.status !== 401) return r
+  await fetch("/session", { credentials: "same-origin" })
+  return fetch(url, { credentials: "same-origin", ...init })
+}
+
 export const api = {
-  seasons: () => fetch("/api/seasons").then(json<{ seasons: number[]; current: number }>),
-  players: (season: number) => fetch(`/api/players?season=${season}`).then(json<{ players: Player[] }>),
+  seasons: () => apiFetch("/api/seasons").then(json<{ seasons: number[]; current: number }>),
+  players: (season: number) => apiFetch(`/api/players?season=${season}`).then(json<{ players: Player[] }>),
   load: (kind: Kind, esb_id: string, season: number) =>
-    fetch("/api/load", {
+    apiFetch("/api/load", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ kind, esb_id, season }),
     }).then(json<Job>),
-  job: (id: string) => fetch(`/api/jobs/${id}`).then(json<Job>),
-  data: (id: string) => fetch(`/api/data/${id}`).then(json<Dataset>),
-  filters: (kind: Kind) => fetch(`/api/filters?kind=${kind}`).then(json<{ groups: string[]; filters: FilterSpec[] }>),
+  job: (id: string) => apiFetch(`/api/jobs/${id}`).then(json<Job>),
+  data: (id: string) => apiFetch(`/api/data/${id}`).then(json<Dataset>),
+  filters: (kind: Kind) => apiFetch(`/api/filters?kind=${kind}`).then(json<{ groups: string[]; filters: FilterSpec[] }>),
   ask: (q: string, kind: Kind, season: number, job?: string) =>
-    fetch(`/api/ask?${new URLSearchParams({ q, kind, season: String(season), ...(job ? { job } : {}) })}`).then(
+    apiFetch(`/api/ask?${new URLSearchParams({ q, kind, season: String(season), ...(job ? { job } : {}) })}`).then(
       json<AskResult>
     ),
-  play: (job: string, id: string) => fetch(`/api/play/${job}/${encodeURIComponent(id)}`).then(json<PlayDetailData>),
+  play: (job: string, id: string) => apiFetch(`/api/play/${job}/${encodeURIComponent(id)}`).then(json<PlayDetailData>),
   exportUrl: (id: string) => `/api/export/${id}`,
 }
 
