@@ -1,9 +1,15 @@
 """
-Read the numbers printed in a route chart's stat box.
+Read the numbers printed in a chart's stat box.
 
-2023+ charts print TARGETS-REC / YARDS / TD / YAC under the field; older ones RECEPTIONS / REC YARDS /
+Route charts: 2023+ print TARGETS-REC / YARDS / TD / YAC under the field; older ones RECEPTIONS / REC YARDS /
 TOUCHDOWNS. The chart metadata carries receptions, yards and TDs but not targets, and the route reader needs
 targets to know how many incomplete (grey) routes to look for - so for 2023+ charts they are read off the image.
+
+Every chart type: NGS's listing carries no stats at all for some charts (mostly 2021-23 playoff games), and the
+readers need them (how many completions / TDs / routes / carries to find) - read_pass_stats / read_route_stats /
+read_carry_stats read them off the image instead:
+  pass   COMP/ATT, YARDS, TOUCHDOWNS (older) | + TDS, INTS (2021-22) | TD-INT, CPOE (2023+)
+  carry  CARRIES, RUSH YARDS, TOUCHDOWNS | CARRIES, YARDS, TD, RYOE (2023+)
 
 The digits are matched against templates learned from charts whose REC / YARDS / TD are known from the
 metadata (statbox_digits.npz). Checked on 1,447 held-out charts: receptions 100%, yards 99.9%, TDs 99.9%.
@@ -18,12 +24,35 @@ GLYPH = (20, 36)            # templates are compared at this size
 _TEMPLATES = None
 
 
-def _templates():
+def _all():
     global _TEMPLATES
     if _TEMPLATES is None:
         z = np.load(os.path.join(os.path.dirname(__file__), "statbox_digits.npz"))
         _TEMPLATES = {k: z[k] for k in z.files}
     return _TEMPLATES
+
+
+def _templates(bold=False):
+    """Digit templates '0'-'9' for the regular stat-box font, or the heavier one some charts use (stored 'b0'-'b9').
+    The 'slash' of COMP/ATT is kept apart: _slash()."""
+    t = _all()
+    if bold:
+        return {k[1:]: v for k, v in t.items() if k.startswith("b") and k[1:].isdigit()}
+    return {k: v for k, v in t.items() if k.isdigit()}
+
+
+def _font(groups):
+    """The template set that fits this chart's digits best (regular or bold)."""
+    glyphs = [c["glyph"] for g in groups for c in g if c["kind"] == "digit" and not _is_slash(c)]
+    if not glyphs:
+        return _templates()
+    sets = [_templates(), _templates(bold=True)]
+    cost = [np.median([min(np.abs(T[d] - x).sum() for d in T) for x in glyphs]) if T else np.inf for T in sets]
+    return sets[int(np.argmin(cost))]
+
+
+def _slash():
+    return _all().get("slash")
 
 
 def _numbers(img):
@@ -76,6 +105,74 @@ def read_stats(image):
     dash = [i for i, c in enumerate(tr) if c["kind"] == "dash"]
     if not dash:
         return None
-    T = _templates()
+    T = _font(g)
     return dict(targets=_read(tr[:dash[0]], T), receptions=_read(tr[dash[0] + 1:], T),
                 yards=_read(yards, T), td=_read(td, T), yac=_read(yac, T))
+
+
+def _is_slash(c):
+    sl = _slash()
+    if sl is None or c["kind"] != "digit":
+        return False
+    d = np.abs(sl - c["glyph"]).sum()
+    return all(d < min(np.abs(T[k] - c["glyph"]).sum() for k in T) for T in (_templates(), _templates(bold=True)) if T)
+
+
+def _split_at(comps, test):
+    for i, c in enumerate(comps):
+        if test(c):
+            return comps[:i], comps[i + 1:]
+    return None, None
+
+
+def read_pass_stats(image):
+    """{'completions', 'attempts', 'passingYards', 'touchdowns', 'interceptions'} from a pass chart's stat box
+    (interceptions is None on the oldest layout, which doesn't print them), or None if it can't be read."""
+    g = _numbers(image)
+    if len(g) < 3:
+        return None
+    T = _font(g)
+    comp, att = _split_at(g[0], _is_slash)
+    if comp is None:
+        # the oldest layout's "/" is taller than the digits and isn't picked up: split at the widest gap instead
+        first = [c for c in g[0] if c["kind"] == "digit"]
+        if len(first) < 2:
+            return None
+        gaps = [first[i + 1]["x"] - first[i]["x1"] for i in range(len(first) - 1)]
+        i = int(np.argmax(gaps))
+        if len(gaps) > 1 and gaps[i] < 1.6 * float(np.median(gaps)):
+            return None
+        comp, att = first[:i + 1], first[i + 1:]
+    out = dict(completions=_read(comp, T), attempts=_read(att, T), passingYards=_read(g[1], T), interceptions=None)
+    third = g[2]
+    dash = [i for i, c in enumerate(third) if c["kind"] == "dash" and 0 < i < len(third) - 1]
+    if dash:                                         # 2023+: "TD-INT"
+        out["touchdowns"], out["interceptions"] = _read(third[:dash[0]], T), _read(third[dash[0] + 1:], T)
+    else:
+        out["touchdowns"] = _read(third, T)
+        if len(g) >= 4:                              # 2021-22: separate INTS
+            out["interceptions"] = _read(g[3], T)
+    return out if None not in (out["completions"], out["attempts"], out["touchdowns"]) else None
+
+
+def read_route_stats(image):
+    """{'receptions', 'receivingYards', 'touchdowns', 'targets' (2023+ only)} from a route chart's stat box."""
+    s = read_stats(image)
+    if s:
+        return dict(receptions=s["receptions"], receivingYards=s["yards"], touchdowns=s["td"], targets=s["targets"])
+    g = _numbers(image)
+    if len(g) != 3:
+        return None
+    T = _font(g)
+    out = dict(receptions=_read(g[0], T), receivingYards=_read(g[1], T), touchdowns=_read(g[2], T), targets=None)
+    return out if None not in (out["receptions"], out["touchdowns"]) else None
+
+
+def read_carry_stats(image):
+    """{'carries', 'rushingYards', 'touchdowns'} from a carry chart's stat box."""
+    g = _numbers(image)
+    if len(g) not in (3, 4):
+        return None
+    T = _font(g)
+    out = dict(carries=_read(g[0], T), rushingYards=_read(g[1], T), touchdowns=_read(g[2], T))
+    return out if None not in (out["carries"], out["touchdowns"]) else None

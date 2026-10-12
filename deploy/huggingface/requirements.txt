@@ -1,0 +1,15 @@
+# versions the app was tested with (Python 3.14)
+numpy==2.5.3
+pandas==3.0.6
+scipy==1.18.1
+scikit-learn==1.9.1
+scikit-image==0.26.0
+opencv-python-headless==5.0.0.93
+requests==2.34.2
+nflreadpy==0.1.5
+polars==1.44.2
+pyarrow==25.0.1
+fastapi==0.141.1
+starlette==1.7.0
+pydantic==2.13.5
+uvicorn==0.54.0

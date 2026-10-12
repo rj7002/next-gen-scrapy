@@ -27,6 +27,7 @@ from . import calib as K
 from . import carries as ngs_carries
 from . import passes as ngs_passes
 from . import routes as ngs_routes
+from . import statbox as ngs_statbox
 
 TYPES = {"pass": "Pass_Charts", "route": "Route_Charts", "carry": "Carry_Charts"}
 
@@ -37,50 +38,76 @@ def chart_info(meta, image_path):
                 name=meta["playerName"], position=meta["position"])
 
 
+STAT_KEYS = {"pass": ("completions", "attempts", "passingYards", "touchdowns", "interceptions"),
+             "route": ("receptions", "receivingYards", "touchdowns", "targets"),
+             "carry": ("carries", "rushingYards", "touchdowns")}
+_READERS = {"pass": ngs_statbox.read_pass_stats, "route": ngs_statbox.read_route_stats, "carry": ngs_statbox.read_carry_stats}
+
+
+def chart_stats(kind, image, meta):
+    """
+    (decoded image, stats, source): the counts the chart itself prints in its stat box, which is what is drawn on
+    it. NGS's listing sometimes carries no stats for a chart (mostly 2021-23 playoff games), and sometimes the
+    game's final line while the chart was made before the game ended - in both cases the image is the truth. Keys
+    the stat box doesn't show (e.g. interceptions on the oldest layout) come from the listing. Stats the listing
+    lacks are also filled into `meta` itself, so whoever holds the chart dict sees them.
+    """
+    im = K.read_image(image)
+    read = _READERS[kind](im) or {}
+    stats = {k: meta.get(k) for k in STAT_KEYS[kind]}
+    for k, v in read.items():
+        if v is not None:
+            stats[k] = v
+            meta.setdefault(k, v)
+    missing = [k for k in STAT_KEYS[kind] if k not in ("targets", "attempts", "passingYards", "receivingYards", "rushingYards")
+               and stats.get(k) is None]
+    if missing:
+        raise ValueError(f"chart stats unreadable and not in the listing: {', '.join(missing)}")
+    return im, stats, "image" if read else "listing"
+
+
 def process_pass(image_path, meta):
-    td = meta["touchdowns"]
-    expected = {"COMPLETE": meta["completions"] - td, "TOUCHDOWN": td, "INTERCEPTION": meta["interceptions"]}
-    # Incompletions are NOT constrained: the chart does not draw every attempted pass.
-    im, found, lay = ngs_passes.detect_passes(image_path, expected)
+    im0, st, src = chart_stats("pass", image_path, meta)
+    td = st["touchdowns"]
+    expected = {"COMPLETE": st["completions"] - td, "TOUCHDOWN": td, "INTERCEPTION": st["interceptions"]}
+    # Incompletions are NOT constrained: the chart does not draw every attempted pass - only capped
+    if st.get("attempts") is not None:
+        expected["INCOMPLETE_MAX"] = st["attempts"] - st["completions"] - st["interceptions"]
+    im, found, lay = ngs_passes.detect_passes(im0, expected)
     pts = lay.img_to_field([[f["cx"], f["cy"]] for f in found]) if found else []
     base = chart_info(meta, image_path)
-    rows = [dict(base, pass_type=f["pass_type"], located=True,
+    # A ring past the chart's deepest gridline (the art stops at about +50) has its depth extrapolated from the
+    # calibration; checked against play-by-play air yards those are as accurate as the rest (median 1.4 yd), so
+    # they're kept, flagged `extrapolated`.
+    rows = [dict(base, pass_type=f["pass_type"], located=True, extrapolated=bool(p[1] > lay.max_reliable_yard),
                  x_coord=round(float(p[0]), 2), y_coord=round(float(p[1]), 2))
             for f, p in zip(found, pts)]
-    # A ring detected past the chart's deepest verified yard line has a real ring (it was found), but
-    # its field position is extrapolated past any gridline evidence and cannot be trusted (see
-    # calib.calibrate / routes.resample_field). Keep the row - it still counts toward the box score -
-    # but drop the coordinates rather than report a likely-wrong deep location.
-    # A single pass can never be deeper than the passer's own game total - an independent check on
-    # top of the chart's own calibration, for the same reason routes.resample_field takes one too.
-    ceiling = min(lay.max_reliable_yard, meta.get("passingYards", float("inf")))
-    n_deep_dropped = 0
-    for r in rows:
-        if r["y_coord"] is not None and r["y_coord"] > ceiling:
-            r["located"], r["x_coord"], r["y_coord"] = False, None, None
-            n_deep_dropped += 1
+    n_extrapolated = sum(r["extrapolated"] for r in rows)
     got = {k: sum(f["pass_type"] == k for f in found) for k in ("COMPLETE", "TOUCHDOWN", "INTERCEPTION", "INCOMPLETE")}
     # Every completion, touchdown and interception IS drawn on the chart, so if one was not found it is
     # hidden under another ring. Emit it with no coordinates rather than dropping it, so the row counts
     # still match the box score. (Incompletions are not padded: the chart genuinely omits some.)
     for ptype, n in expected.items():
+        if ptype not in got:
+            continue
         for _ in range(max(0, n - got[ptype])):
-            rows.append(dict(base, pass_type=ptype, located=False, x_coord=None, y_coord=None))
+            rows.append(dict(base, pass_type=ptype, located=False, extrapolated=False, x_coord=None, y_coord=None))
     qc = dict(base, depth_yd=round(lay.max_reliable_yard, 1), expected_complete=expected["COMPLETE"], detected_complete=got["COMPLETE"],
-              expected_td=td, detected_td=got["TOUCHDOWN"], expected_int=meta["interceptions"],
-              detected_int=got["INTERCEPTION"], attempts=meta["attempts"],
+              expected_td=td, detected_td=got["TOUCHDOWN"], expected_int=st["interceptions"],
+              detected_int=got["INTERCEPTION"], attempts=st.get("attempts"),
               detected_incomplete=got["INCOMPLETE"],
-              expected_incomplete=meta["attempts"] - meta["completions"] - meta["interceptions"],
-              n_deep_dropped=n_deep_dropped)
+              expected_incomplete=(st["attempts"] - st["completions"] - st["interceptions"]) if st.get("attempts") is not None else None,
+              n_deep_dropped=0, n_extrapolated=n_extrapolated, stats_from=src)
     qc["counts_ok"] = (qc["expected_complete"] == qc["detected_complete"] and td == got["TOUCHDOWN"]
-                       and meta["interceptions"] == got["INTERCEPTION"])
+                       and st["interceptions"] == got["INTERCEPTION"])
     return rows, qc
 
 
 def process_route(image_path, meta):
+    im0, st, src = chart_stats("route", image_path, meta)
     routes, info = ngs_routes.detect_routes(
-        image_path, {"receptions": meta["receptions"], "touchdowns": meta["touchdowns"],
-                     "targets": meta.get("targets"), "max_yards": meta.get("receivingYards")})
+        im0, {"receptions": st["receptions"], "touchdowns": st["touchdowns"],
+              "targets": st.get("targets"), "max_yards": st.get("receivingYards")})
     base = chart_info(meta, image_path)
     rows = []
     for i, r in enumerate(routes, 1):
@@ -89,35 +116,75 @@ def process_route(image_path, meta):
                              gap=bool(r.get("gap", False)), point=j, segment=seg,
                              x_coord=round(float(x), 2), y_coord=round(float(y), 2)))
     n_c = sum(r["route_type"] == "COMPLETE" for r in routes)
-    qc = dict(base, depth_yd=info["depth_yd"], expected_receptions=meta["receptions"], detected_complete=n_c,
-              expected_targets=meta.get("targets"), detected_routes=len(routes),
-              detected_incomplete=len(routes) - n_c, expected_td=meta["touchdowns"], detected_td_rings=info["n_td_rings"],
+    qc = dict(base, depth_yd=info["depth_yd"], expected_receptions=st["receptions"], detected_complete=n_c,
+              expected_targets=st.get("targets"), detected_routes=len(routes),
+              detected_incomplete=len(routes) - n_c, expected_td=st["touchdowns"], detected_td_rings=info["n_td_rings"],
               n_deep_truncated=info["n_deep_truncated"], n_deep_dropped=info["n_deep_dropped"],
               detected_td_routes=sum(bool(r["td"]) for r in routes),
               n_gap_routes=sum(bool(r.get("gap", False)) for r in routes),
-              counts_ok=(n_c == meta["receptions"] and sum(bool(r["td"]) for r in routes) == meta["touchdowns"]),
-              reader=info.get("method"))
+              counts_ok=(n_c == st["receptions"] and sum(bool(r["td"]) for r in routes) == st["touchdowns"]),
+              reader=info.get("method"), stats_from=src)
     return rows, qc
 
 
-def process_carry(image_path, meta):
-    carries, info = ngs_carries.detect_carries(
-        image_path, {"carries": meta["carries"], "touchdowns": meta["touchdowns"],
-                     "max_yards": meta.get("rushingYards")})
-    base = chart_info(meta, image_path)
+def carry_colours(plays):
+    """{'LOSS', 'SHORT', 'LONG': carries} a carry chart should draw for these pbp runs: red for lost yards, yellow 0-5,
+    green 6+ and every touchdown (checked on tracking-identified runs: 5-yd runs are yellow, 6-yd green)."""
+    y = plays["yards_gained"].astype(float)
+    td = plays["touchdown"].fillna(0).astype(float) == 1 if "touchdown" in plays else pd.Series(False, index=plays.index)
+    return {"LOSS": int(((y < 0) & ~td).sum()), "SHORT": int(((y >= 0) & (y <= 5) & ~td).sum()),
+            "LONG": int(((y > 5) | td).sum())}
+
+
+def _carry_rows(base, carries):
     rows = []
     for i, c in enumerate(carries, 1):
         for j, (x, y) in enumerate(c["pts"]):
             rows.append(dict(base, carry_id=i, gain_class=c["color"], touchdown=c["td"], fumble_lost=c["fumble"],
                              handoff_ok=c["handoff_ok"], gap=bool(c.get("gap", False)), point=j,
                              x_coord=round(float(x), 2), y_coord=round(float(y), 2)))
-    qc = dict(base, depth_yd=info["depth_yd"], expected_carries=meta["carries"], detected_carries=len(carries),
-              expected_td=meta["touchdowns"], detected_td_rings=info["n_td_rings"],
-              n_deep_truncated=info["n_deep_truncated"], n_deep_dropped=info["n_deep_dropped"],
+    return rows
+
+
+def process_carry(image_path, meta, plays=None, recheck="mismatch"):
+    """
+    plays (optional): this back's pbp runs in the game. When the reading's colours don't add up to them (a yellow
+    run read as part of a green one at a crossing, ...), the chart is read again with pbp's colour counts held, by
+    every reader, and the reading that best fits the plays (pbp_match.score_chart) is kept. recheck="always" tries
+    the other readings even when the colours add up.
+    """
+    im0, st, src = chart_stats("carry", image_path, meta)
+    expected = {"carries": st["carries"], "touchdowns": st["touchdowns"], "max_yards": st.get("rushingYards")}
+    carries, info = ngs_carries.detect_carries(im0, expected)
+    base = chart_info(meta, image_path)
+    rows = _carry_rows(base, carries)
+    rechecked = False
+    if plays is not None and len(plays) == st["carries"]:
+        want = carry_colours(plays)
+        have = {k: sum(c["color"] == k for c in carries) for k in want}
+        if have != want or recheck == "always":
+            from . import pbp_match as PM
+            params = PM._league_params("carry", pd.DataFrame([base])) or PM._calibrate("carry", [])
+            scored = [(PM.score_chart(pd.DataFrame(rows), plays, "carry", params), rows, carries, info)]
+            for method in ("layers", "graph", "tracer"):
+                try:
+                    alt, alt_info = ngs_carries.detect_carries(im0, dict(expected, by_color=want), method=method)
+                except Exception:
+                    continue
+                if len(alt) != st["carries"]:
+                    continue
+                alt_rows = _carry_rows(base, alt)
+                scored.append((PM.score_chart(pd.DataFrame(alt_rows), plays, "carry", params), alt_rows, alt, alt_info))
+            best = min(scored, key=lambda t: t[0])
+            rechecked = best[1] is not rows
+            _, rows, carries, info = best
+    qc = dict(base, depth_yd=info["depth_yd"], expected_carries=st["carries"], detected_carries=len(carries),
+              expected_td=st["touchdowns"], detected_td_rings=info["n_td_rings"],
+              n_deep_truncated=info.get("n_deep_truncated", 0), n_deep_dropped=info.get("n_deep_dropped", 0),
               detected_td_carries=sum(bool(c["td"]) for c in carries),
               n_gap_carries=sum(bool(c.get("gap", False)) for c in carries),
-              counts_ok=(len(carries) == meta["carries"] and sum(bool(c["td"]) for c in carries) == meta["touchdowns"]),
-              reader=info.get("method"))
+              counts_ok=(len(carries) == st["carries"] and sum(bool(c["td"]) for c in carries) == st["touchdowns"]),
+              reader=info.get("method"), stats_from=src, reread_with_pbp=rechecked)
     return rows, qc
 
 

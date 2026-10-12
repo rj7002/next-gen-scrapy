@@ -108,14 +108,14 @@ FILTERS = [
     F("wind", "Wind (mph)", "Player & game", "range"),
 
     # Match quality
-    F("location_confident", "Location confident", "Match quality", "bool",
-      help="95%+ likely the drawn location belongs to this play (look-alike plays swapped on top of each other don't count)"),
     F("location_prob", "Location probability", "Match quality", "range", step=0.05,
       help="chance the drawn location is within 3 yds of where this play happened"),
     F("n_candidates", "Candidate plays", "Match quality", "range",
       help="1 = the only play with this player + outcome in the game, so the match is certain"),
     F("start_ok", "Route start traced cleanly", "Match quality", "bool", tables=("routes",)),
     F("handoff_ok", "Handoff traced cleanly", "Match quality", "bool", tables=("carries",)),
+    F("gap", "Includes an undrawn jump into a TD ring", "Match quality", "bool", tables=("routes", "carries"),
+      help="NGS drew the TD ring but no line into it; the line was joined to it in a straight jump"),
 ]
 
 BY_COL = {f["col"]: f for f in FILTERS}
