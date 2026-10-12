@@ -23,7 +23,7 @@ from importlib.metadata import version
 from .calib import CalibrationError, Chart, calibrate
 from .carries import detect_carries
 from .passes import detect_blue_rings, detect_passes
-from .pbp_match import load_pbp_with_ftn, match_to_pbp
+from .pbp_match import add_gamecenter, load_pbp_with_ftn, match_to_pbp
 from .player import get_carries, get_passes, get_routes
 from .plot import draw_field, plot
 from .reshape import to_paths
@@ -40,6 +40,7 @@ __all__ = [
     # one row per carry/route instead of one row per point
     "to_paths",
     # matching a chart to real plays (needs nflreadpy - pip install "next-gen-scrapy[pbp]")
+    "add_gamecenter",
     "load_pbp_with_ftn",
     "match_to_pbp",
     # plotting on an NGS-style field (needs matplotlib - pip install "next-gen-scrapy[plot]")

@@ -36,6 +36,8 @@ from . import route_graph as RG
 LOSS, SHORT, LONG = 3, 4, 5                 # colour ids (distinct from route_graph's so its catch logic never fires)
 ANY = 6                                     # a stroke whose colour can't be seen (all of it inside crossings)
 NAMES = {LOSS: "LOSS", SHORT: "SHORT", LONG: "LONG"}
+COLORS = {v: k for k, v in NAMES.items()}
+COLOR_SLACK = 400.0                          # integer-program penalty per carry off a given per-colour count
 
 START_MAX_Y, START_MIN_Y = 1.0, -15.0       # a carry starts at the handoff, behind the line of scrimmage
 DEPTH_MARGIN = 0.8                           # yd of slack on the colour / end-depth rule (calibration noise)
@@ -333,7 +335,9 @@ def through_paths(G, lay, targets):
 
 
 # ----------------------------------------------------------------------------------------------- choose
-def choose(G, cands, n_carries, td, min_cover):
+def choose(G, cands, n_carries, td, min_cover, by_color=None):
+    """by_color (optional): {colour id: carries of that colour} - e.g. from play-by-play (red: lost yards, yellow:
+    0-5, green: 6+ or a touchdown) - held softly: missing it costs COLOR_SLACK per carry."""
     P = len(cands)
     if P == 0:
         return [], {}
@@ -343,9 +347,13 @@ def choose(G, cands, n_carries, td, min_cover):
     V = len(end_nodes)
     cover = [e for e, E in enumerate(G.edges) if not E["dead"] and not E["bridge"] and E["length"] >= min_cover]
     C, Fn = len(cover), len(fumbles)
+    by_color = {k: v for k, v in (by_color or {}).items() if v is not None}
+    K = len(by_color)
     # x_p (P) | start flags (V) | count slacks (4) | unexplained ends (V) | uncovered (C) | unexplained fumble rings (F)
+    # | colour count slacks (2 per colour given)
     o_y, o_cs, o_ue, o_uc, o_uf = P, P + V, P + V + 4, P + V + 4 + V, P + V + 4 + V + C
-    nvar = o_uf + Fn
+    o_cc = o_uf + Fn
+    nvar = o_cc + 2 * K
     c = np.zeros(nvar)
     c[:P] = [p[3] for p in cands]
     c[o_cs:o_cs + 4] = RG.SLACK
@@ -384,7 +392,8 @@ def choose(G, cands, n_carries, td, min_cover):
             c[o_ue + i] = STUB_COST + E["length"]
             if e in cover:
                 c[o_uc + cover.index(e)] = STUB_COST + E["length"]
-    c[o_uf:] = RG.SLACK / 4
+    c[o_uf:o_cc] = RG.SLACK / 4
+    c[o_cc:] = COLOR_SLACK
     rows, cols, vals, lo, hi = [], [], [], [], []
 
     def add(entries, l, h):
@@ -421,6 +430,8 @@ def choose(G, cands, n_carries, td, min_cover):
         add([(j, 1) for j in range(P)] + [(o_cs, -1), (o_cs + 1, 1)], n_carries, n_carries)
     if td is not None and rings:
         add([(j, 1) for j, p in enumerate(cands) if p[4] == "ring"] + [(o_cs + 2, -1), (o_cs + 3, 1)], td, td)
+    for k, (colour, n) in enumerate(by_color.items()):
+        add([(j, 1) for j, p in enumerate(cands) if p[0] == colour] + [(o_cc + 2 * k, -1), (o_cc + 2 * k + 1, 1)], n, n)
     A = sparse.csr_matrix((vals, (rows, cols)), shape=(len(lo), nvar))
     integ = np.zeros(nvar)
     integ[:o_cs] = 1
@@ -435,7 +446,7 @@ def choose(G, cands, n_carries, td, min_cover):
     x = res.x
     dbg = dict(uncovered=[cover[k] for k in range(C) if x[o_uc + k] > 0.5],
                unexplained=[end_nodes[i] for i in range(V) if x[o_ue + i] > 0.5],
-               count_slack=np.round(x[o_cs:o_cs + 4], 2).tolist(), obj=float(res.fun))
+               count_slack=np.round(x[o_cs:o_cs + 4], 2).tolist(), color_slack=float(x[o_cc:].sum()), obj=float(res.fun))
     return [cands[j] for j in range(P) if x[j] > 0.5], dbg
 
 
@@ -668,8 +679,9 @@ def read_carries(image, expected, mode="union", lay=None):
         if orphans and _add_jumps(G, lay, orphans):
             cands = _jump_to_ring(G, _retreat(G, lay, candidate_paths(G, lay)))
     n_carries, td = expected.get("carries"), expected.get("touchdowns")
+    by_color = {COLORS[k]: v for k, v in (expected.get("by_color") or {}).items()}
     min_cover = 2.5 * G.width
-    chosen, dbg = choose(G, cands, n_carries, td, min_cover)
+    chosen, dbg = choose(G, cands, n_carries, td, min_cover, by_color)
     seen = {(p[0], tuple(p[2])) for p in cands}
     for _ in range(2):
         todo = dbg.get("uncovered", [])
@@ -680,7 +692,7 @@ def read_carries(image, expected, mode="union", lay=None):
             break
         seen |= {(p[0], tuple(p[2])) for p in new}
         cands += new
-        chosen, dbg = choose(G, cands, n_carries, td, min_cover)
+        chosen, dbg = choose(G, cands, n_carries, td, min_cover, by_color)
     out = []
     for color, nodes, edges, cost, end_kind in chosen:
         px = RG._path_pixels(G, nodes, edges)

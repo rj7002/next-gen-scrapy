@@ -45,6 +45,7 @@ passes = get_passes("Josh Allen", 2025, weeks=[1, 2])      # downloads the chart
   - [Match confidence columns](#match-confidence-columns)
   - [Re-reading tangled route charts: `retrace_routes`](#re-reading-tangled-route-charts-retrace_routes)
   - [How matching works](#how-matching-works)
+- [Explorer web app](#explorer-web-app)
 - [One-image API](#one-image-api)
   - [`calibrate` and `Chart`](#calibrate-and-chart)
   - [`detect_passes`, `detect_blue_rings`](#detect_passes-detect_blue_rings)
@@ -214,11 +215,21 @@ One row per pass.
 | Column | Meaning |
 |---|---|
 | `pass_type` | `COMPLETE`, `INCOMPLETE`, `INTERCEPTION` or `TOUCHDOWN` (ring colour on the chart) |
-| `located` | `False` if the ring couldn't be placed (drawn completely under another ring, or past the chart's verified depth) - then the coordinates are empty rather than guessed |
+| `located` | `False` if the ring couldn't be placed (drawn completely under another ring) - then the coordinates are empty rather than guessed |
+| `extrapolated` | `True` for a ring past the chart's deepest gridline (the art stops at about +50): its depth is extrapolated from the calibration - checked against play-by-play air yards, as accurate as the rest (median 1.4 yds) |
 | `x_coord`, `y_coord` | Where the ball was caught / targeted |
 
-Every completion, touchdown and interception in the box score gets a row, so the counts always tie out.
+Every completion, touchdown and interception on the chart gets a row - the counts come from the chart's own stat box
+(read off the image, so a chart made before the game ended, or one NGS's listing has no stats for, still ties out).
+Rings the main pass can't separate are found by a second one: ones on the LOS bar, a sideline or under a yard label,
+in the logo corner, tinted by an arc over them, two touchdowns drawn on top of each other, a touchdown at the end of
+its arc, a 2018-19 touchdown disc at the foot of its arc. Of the 96,388 completion / touchdown / interception rings
+drawn on 4,451 charts (2018-2026), 96,308 (99.92%) are located; the rest are covered completely by other rings and
+arcs. 11 more touchdowns have their arc run off the top of the chart: their ring isn't drawn.
 Incompletions are **not** padded: the chart genuinely doesn't draw every incompletion (throwaways, spikes...).
+White rings are found the same ways - including one mostly under a completion / touchdown / interception ring, or
+a tiny far one by a yard label - checked so that charts whose white rings already match their targeted
+incompletions gain none.
 
 ### `route_coords.csv`
 
@@ -258,9 +269,11 @@ One row per chart, comparing what was detected with the chart's own metadata (th
 |---|---|
 | `type` | `pass`, `route` or `carry` |
 | `image` | Path of the chart image |
-| `depth_yd` | Deepest yard line the chart's calibration verified (coordinates beyond it are dropped) |
+| `depth_yd` | Deepest yard line the chart's calibration verified (route / carry coordinates beyond it are dropped; pass rings beyond it are kept, flagged `extrapolated`) |
 | `expected_*` / `detected_*` | Completions, touchdowns, interceptions, incompletions (pass); receptions, targets, routes, TD rings (route); carries, TD rings (carry) |
 | `n_deep_truncated`, `n_deep_dropped` | Lines cut / dropped at the verified depth |
+| `n_extrapolated` | Pass rings placed past the verified depth (see `extrapolated`) |
+| `stats_from` | Where the expected counts came from: `image` (the chart's stat box, read off it) or `listing` (NGS's chart listing) |
 | `counts_ok` | Every count that can be checked matches. **Filter on it** if you only want charts that fully tie out |
 | `error` | Why a chart couldn't be processed (e.g. a blank image NGS published) |
 
@@ -376,7 +389,7 @@ third = passes[(passes.down == 3) & passes.location_confident]
 
 ### `load_pbp_with_ftn`
 
-#### `load_pbp_with_ftn(seasons, participation=True)`
+#### `load_pbp_with_ftn(seasons, participation=True, gamecenter=True, gamecenter_cache=None)`
 
 Loads nflverse play-by-play for `seasons` (an int or a list) and left-joins:
 
@@ -396,12 +409,23 @@ Loads nflverse play-by-play for `seasons` (an int or a list) and left-joins:
   | `defense_coverage_type` | `COVER_0` ... `COVER_6`, `2_MAN`, `PREVENT`, ... |
   | `offense_formation` | `SHOTGUN`, `SINGLEBACK`, `I_FORM`, `EMPTY`, `PISTOL`, `JUMBO`, `WILDCAT`, ... |
   | `offense_personnel`, `defense_personnel` | e.g. `1 RB, 1 TE, 3 WR` |
+- **NGS Game Center** (`gamecenter=True`, one request per game; `gamecenter_cache=` a folder to keep them in) -
+  NGS's own per-game numbers, on every pass play. Since 2023 these are the only public source of NGS's measured air
+  yards, and `match_to_pbp` uses them to pin passes down:
+
+  | Column | Meaning |
+  |---|---|
+  | `ngs_receiver_targets`, `ngs_receiver_avg_air_yards` | The targeted receiver's targets in the game and NGS's average air yards over them (each team's top five receivers) - his targets' depths must add up to this |
+  | `ngs_passer_zones` | The passer's completions and yards per zone, as `"depth,section,completions,yards;..."` (depth 0 behind the line / 1 0-9 / 2 10-19 / 3 20+ air yards; section 0-2 the left / middle / right third of the field) - the completions drawn in a zone must add up to its yards |
+
+  `add_gamecenter(pbp, cache_dir=None)` adds these to a pbp table you already have; `next_gen_scrapy.gamecenter`
+  has the raw tables (`game_tables(game_ids)`).
 
 Returns a pandas DataFrame, one row per pbp play.
 
 ### `match_to_pbp`
 
-#### `match_to_pbp(chart_df, pbp_df, kind, route_matches=None, return_params=False)`
+#### `match_to_pbp(chart_df, pbp_df, kind, route_matches=None, return_params=False, calibration="auto", context=None, tracking=None)`
 
 | Argument | Meaning |
 |---|---|
@@ -410,6 +434,9 @@ Returns a pandas DataFrame, one row per pbp play.
 | `kind` | `"pass"`, `"route"` or `"carry"` |
 | `route_matches` | *(passes only)* The output of `match_to_pbp(..., "route")` for the same games. A targeted receiver's route chart shows the same throw again (its catch point), which is used as extra evidence of where the ball went. **Match routes first, then pass them in.** |
 | `return_params` | Also return the calibrated model parameters: `(matched, params)` |
+| `context` | *(carries)* match_to_pbp output for the same games' other charts (QB passes, routes, other backs): where each play ended, so where the next snap was |
+| `tracking` | *(carries)* tracking from your own copy of the NFL Big Data Bowl 2027 data: `next_gen_scrapy.bdb.load_play_tracking(season)` gives every tracked player (the 2023-25 draft classes - someone is on the field for 64% / 90% / 98% of 2023 / 24 / 25 runs) at the snap, handoff, first contact and end of each play. The matcher scores each line's end against where those players stood when the run ended (the tackler is at the runner, the others have converged on him), and against the ball's spot at the next snap from tracked offensive linemen. (`load_tackle_points` - tacklers only - still works.) Not shipped; the app picks it up from `$NGS_BDB_DIR` or `~/Downloads/nfl-big-data-bowl-2027` |
+| `calibration` | How tight each piece of evidence is taken to be. `"auto"` (default): the league-wide calibration shipped with the package for the data's season (the nearest season if not shipped), so matching one player gives exactly what matching the whole league gives for that player. `"self"`: fit it on this data instead - fine for a whole season of charts, but one player's charts give it little to go on. Or a params dict from `return_params=True`. |
 
 Returns **one row per matched play**:
 
@@ -432,6 +459,7 @@ Plays with no chart entity (e.g. incompletions NGS didn't draw) are simply absen
 | `location_confident` | `location_prob >= 0.95` |
 | `match_prob` | Probability that this chart entity is *exactly* this play (not just in the same spot). Use it when the play's identity matters, e.g. looking up one specific play. |
 | `n_candidates` | How many plays in this game had this player + outcome. `1` = the only candidate, so the match is certain. |
+| `implausible` | *(carries)* The line can't be this play - its end is 4+ yds from the play's gain, or 2+ yds off in the wrong colour. The one-to-one assignment had to place it, but no play fits (usually a misread line: a short run hidden under a longer one, read as a branch of it). Its probabilities are capped at 0.08 - about how often these turn out right. The app shows such lines as "no play fits". |
 | `match_cost`, `match_margin` | The matched pair's negative log-likelihood, and how much worse the next-best play would have fit (nats) |
 | `swap_yds` | The farthest a plausible rival chart entity sits from the chosen one (0 if none) |
 | `residual` | `|pbp yardage - chart yardage|` (air yards for pass/route, yards gained for carries), for reference |
@@ -440,10 +468,16 @@ Both probabilities are checked against evidence the model doesn't use (see [How 
 
 ### Re-reading tangled route charts: `retrace_routes`
 
-Where several routes cross, the tracer can join the wrong pieces and give one route another route's catch point
-- then no matching can put that play in the right place. `retrace_routes` re-reads those charts: for every chart
-where a catch's match is unsure, it generates up to 40 alternative readings (different ways of joining the
-crossing pieces), scores each against that receiver's real targets in that game, and keeps the best fit.
+Where several routes cross, a reading can join the wrong pieces and give one route another route's catch point -
+then no matching can put that play in the right place. `retrace_routes` re-reads those charts: for every chart
+where a catch's match is unsure - or, given `pass_matches=` (the QB charts' passes, matched without route links),
+where a catch lands 2.5+ yds from the QB's dot for the same throw - it collects alternative readings (the original
+tracer's different ways of joining the crossing pieces, plus both stroke-graph readers' readings), scores each -
+and the chart's current reading - against that receiver's real targets in that game and the QB's dots, and keeps
+whichever fits best. Graded on tracked receivers' real catch points (Big Data Bowl, 2024-25), completed routes
+whose catch lands within 2 yds of the real one go from 83.6% to 88.5%; `images=` takes charts already in memory
+(the app re-reads every route chart it uses this way). Checked against the QBs' pass charts (independent of it), it
+lifts route matching by 1-2 points even on top of the graph reader (2021: 96.1% -> 98.1%, 2024: 94.8% -> 95.9%).
 
 ```python
 import pandas as pd
@@ -490,25 +524,94 @@ assignment (Hungarian algorithm) wins:
 
 | Kind | Evidence |
 |---|---|
-| Pass | Depth vs NGS air yards (2018-22) or pbp air yards · across-field spot vs pbp pass location **and** NGS route type of the target (an out or go lands near the sideline, a slant inside) · the receiver's route-chart catch point for the same throw, when there is one |
-| Route | Catch depth and spot as for passes · after-catch run vs pbp yards after catch · ends at the sideline vs pbp out of bounds |
-| Carry | End point vs yards gained · line colour (loss / 0-5 / 6+) vs yards gained · where the run crosses the LOS vs pbp run gap (guard ~2 yds from the handoff, tackle ~4-5, end ~10) · handoff depth vs formation (shotgun ~-4.4 yds, under center ~-6.4) · start vs FTN starting hash (2022+) · ends at the sideline vs out of bounds · fumble ring vs fumble lost |
+| Pass | **NGS Game Center totals**: each receiver's targets must add up to his NGS air yards, and the completions in each of the passer's zones (depth band x third of the field) to the zone's yards - every round, each pass gets the depth and yards its receiver's other targets and its zone's other completions leave for it, and the assignment is redone until nothing changes · Depth vs NGS air yards (2018-22) or pbp air yards, with a separate offset and spread per outcome and depth band (a completion's dot sits ~2x closer to its air yards than an incompletion's, and short passes closer than deep ones) · across-field spot vs pbp pass location **and** NGS route type of the target (an out or go lands near the sideline, a slant inside), shifted by the hash the ball was snapped from (FTN, 2022+: a throw from the left hash lands ~3 yds further left) · the receiver's route-chart catch point for the same throw, when there is one · for incompletions, how likely NGS was to draw the play at all (it skips ~22%, mostly passes with no intended receiver) |
+| Route | Catch depth and spot as for passes · after-catch run vs pbp yards after catch · ends at the sideline vs pbp out of bounds · **the line's shape vs NGS's route type for the target** (a small shape model, `route_type.py`, gives each line's probability of being a GO, SLANT, OUT, ...) · route length before the catch vs time to throw · the QB's pass-chart dot for the same throw (`pass_matches=`, completions) · for completions, where the line ends vs FTN's hash for the next snap (2022+: the receiver went down outside a hash or between them) |
+| Carry | End point vs yards gained (or, when a foul enforced at a spot cut pbp's yards short, the run's yards from the play description) · line colour (loss / 0-5 / 6+) vs yards gained · **the line's shape vs pbp run gap** (a small shape model, `carry_type.py`, gives each line's probability of each gap) and whether it came from shotgun (before 2022) · where the run ends across the field vs pbp run location · handoff depth vs formation (shotgun ~-4.4 yds, under center ~-6.4) · **start vs the snap spot**: FTN's starting hash (2022+) or, chained, where the previous play ended, plus where a back lines up for the formation · **how long the play took**: the shape model reads the seconds from snap to whistle off the line, vs pbp's `end_clock_time - time_of_day` (2022+) · **where the line ends vs FTN's hash for the next snap** (2022+: a run that ends outside a hash puts the next snap on it, one that ends between them in the middle) · ends at the sideline vs out of bounds · fumble ring vs fumble lost · *(with `tracking=`)* where the line ends vs where every tracked player stood when the run ended, and vs the next snap's ball spot |
 
-**Self-calibrating.** Every term's offset and spread is measured on the plays that can only match one way (one
-chart entity, one pbp play), then re-fit on the first pass's confident matches across all outcomes (the
-one-way plays are mostly touchdowns, which would otherwise skew it), and the match is run again. Each term is
+**Calibrated on the whole league.** Every term's offset and spread is measured on the plays that can only match
+one way (one chart entity, one pbp play), then re-fit on the first pass's confident matches across all outcomes
+(the one-way plays are mostly touchdowns, which would otherwise skew it), and the match is run again. Carries keep
+touchdowns and runs out of bounds apart for the yards term: their lines end further past the official spot (~1.2
+and ~0.7 yds, against ~0.4 for other runs). This is
+done on every chart of each season, 2018-2025, and shipped with the package (`pbp_calibration.json`), so a
+single player's charts are matched with the same calibration as the whole league's
+(`calibration="self"` fits it on the data passed in instead). Each term is
 robust to outliers, and a missing pbp field counts as "no information", never as a match.
 
 **Probabilities.** The assignment's uncertainty comes from Sinkhorn-balanced assignment probabilities
-(respecting that each dot belongs to one play), checked against held-out evidence. For passes and routes: a
-QB's pass dot and the receiver's catch point are the same throw drawn on two separate charts, and their
-agreement rises in step with the reported confidence, up to the ceiling that check allows. For carries the raw
-probabilities came out too cautious, so they are temperature-scaled (`_TEMP` in `pbp_match.py`) to match
-FTN's starting hash, fitted with the hash left out of the model.
+(respecting that each dot belongs to one play), calibrated against evidence the model being graded doesn't use:
+
+- **Passes and routes** grade each other. A QB's pass dot and the receiver's catch point are the same throw drawn
+  on two separate charts, so with each matched independently, the distances between them are a mixture of
+  "same play" (as on the plays that can only match one way) and "another play in the same group". The mixture
+  weight is the share matched right - checked by deliberately mis-assigning a known share, which it tracks one
+  for one. Raw pass probabilities came out far too cautious and are sharpened; the route-chart link
+  (`route_matches=`) is a measured geometric likelihood and enters as it is.
+- **Carries** are graded directly against tracking: for 2023-25 runs where the NFL Big Data Bowl tracked the
+  tackler, his spot says where the run really ended (the line ends ~1.15 yds past him; even a near-certain match
+  ends within 3 yds of him only 90% of the time, which the grading allows for).
+  Their `location_prob` goes through a map fitted on that (`_CARRY_LOC_CALIBRATION`, with and without FTN's hashes),
+  and `match_prob`'s temperature was set against FTN's starting hash and participation's formation, each left out
+  of the model it grades.
+
+For passes the result then goes through a calibration map (`_LOC_CALIBRATION`, one with NGS per-play air yards and
+one without): the raw numbers ran low at the bottom - they count a rival dot as a threat even when another play
+has already claimed it - and a little high in the upper middle, so e.g. a raw 0.66 that proves right 79% of the
+time is reported as ~0.8. A play with a single candidate stays at 1.
+
+The temperatures are `_TEMP` in `pbp_match.py`. Calibration never changes which play is chosen, only the
+reported confidence.
 
 **The limit.** Plays that look the same to both the chart and pbp - same player, outcome, depth and side,
 e.g. two 2-yard runs up the middle - can't be told apart by anyone. The matcher then picks one, and
 `match_prob` says so; if their dots sit together, `location_prob` still says the location is right.
+
+---
+
+## Explorer web app
+
+`service/` is a web app on top of the package. Pick any player and season: it pulls that player's charts live from
+Next Gen Stats, reads them, matches every pass, route or carry to its play-by-play row with
+[`match_to_pbp`](#match_to_pbp), and draws the result. There's no database; results are cached in memory while
+the server runs. A QB's passes are matched first, then pinned again with their receivers' route charts.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/rj7002/next-gen-scrapy/main/docs/explorer.png" width="100%" alt="Ja'Marr Chase's 2024 routes in the explorer, colored by route type on a tilted field">
+</p>
+
+- **The field**: every play as an animated route, carry or pass dot (hover for the play, click for its detail
+  sheet), or as a heatmap; color by outcome, EPA, route type, down or match confidence; optional 3D tilt.
+- **Filters**: play-by-play, FTN and NGS participation columns (down, coverage, pressure, formation...).
+- **Ask in plain English**: "deep passes vs zone in the 4th quarter" sets the filters, and can switch player
+  or season. A built-in parser handles most questions; with `GEMINI_API_KEY` in `.env`, Gemini fills in the words
+  it doesn't understand.
+- **Insights, plays table, games**, and a CSV export of the full matched data.
+
+Run it from a clone of the repo (the UI build needs Node 20.19+ or 22.12+):
+
+```
+pip install -e ".[pbp]" fastapi "uvicorn[standard]"
+cd service/web && npm install && npm run build && cd ../..
+uvicorn service.app:app --port 8000        # open http://127.0.0.1:8000
+```
+
+Players load from pre-read, pre-matched season files when the app can reach them: the
+[NFL-NGS-Tracking-Data](https://github.com/rj7002/NFL-NGS-Tracking-Data) pipeline publishes every season (and refreshes
+the current one daily) as assets of its `data` release. Charts in those files load in a couple of seconds; anything
+newer is read live. Set `NGS_DATA_TOKEN` to a GitHub token that can read that repo (it's private), or `NGS_DATA_REPO` to
+use another; without them every chart is read live, which takes from a few seconds to about two minutes the first time,
+depending on how many charts the player has and whether that season's play-by-play is already loaded. To work on the UI, run uvicorn with
+`--reload`, and `npm run dev` in `service/web` (Vite proxies `/api` to port 8000). The UI is React with
+[shadcn/ui](https://ui.shadcn.com) components.
+
+**Deploying it.** `deploy/huggingface/` holds a Docker setup for a [Hugging Face Space](https://huggingface.co/docs/hub/spaces-sdks-docker)
+(the free CPU tier is enough): after `hf auth login`, `deploy/huggingface/push.sh <you>/<space-name>` stages just the
+package and `service/` (no caches, data or `.env`) and pushes it; the Space builds the UI and starts the server on
+port 7860. Add `GEMINI_API_KEY` as a Space secret if you want the "ask" box. The deployed app runs with
+`NGS_API_GUARD=1`: `/api` then answers only the app's own page in a browser (same-site requests carrying the session
+cookie the page sets, rate-limited per visitor), so the API can't be scripted casually. Set `NGS_SESSION_SECRET` to
+keep sessions valid across restarts. A local Big Data Bowl copy is never
+uploaded, so a deployed app matches 2023-25 carries without tracking.
 
 ---
 
@@ -690,27 +793,70 @@ offset that the matcher calibrates out).
 - **If the chart art changes**, a chart that can't be calibrated is reported rather than silently mis-scaled;
   because calibration is per chart, a new zoom level needs no code change.
 
-### Matching (2018-2025, after `retrace_routes`)
+### Matching (2018-2025)
 
-Average `location_prob` (estimated share of plays whose attached location is within 3 yds of where the play
-happened), and the share of plays that are `location_confident`:
+Checked against independent evidence (see [How matching works](#how-matching-works)): passes and routes against
+each other's chart, carries against FTN's hash / participation's formation held out of the model. "Right" for
+passes and routes means the attached location is the play's (two look-alike plays swapped on both charts still
+count); carries the same, graded against the tracked tackle spots of 2023-25 runs.
 
-| Kind | Est. location accuracy, 2018-22 | 2023-25 | `location_confident`, 2018-22 | 2023-25 |
-|---|---|---|---|---|
-| Passes | 92% | 78% | 68% | 31% |
-| Routes | 90% | 87% | 62% | 55% |
-| Carries | 68% | 72% | 31% | 36% |
+| Kind | Est. right, 2018-22 | 2023-25 | `location_confident`, 2018-22 | 2023-25 | Right when confident |
+|---|---|---|---|---|---|
+| Passes (with `route_matches=`) | ~98%† | ~92%† | 83% | 46% | ~97-100%† |
+| Routes | ~98% | ~91% | 77% | 71% | ~98-100% |
+| Carries | ~78%* | ~84%* | 32% | 47% | ~99% |
 
-- **Passes from 2023 on** are less precise because NGS stopped publishing its measured air yards after 2022,
-  leaving pbp's scorer-spotted ones. No free per-play source replaces them.
-- **Carries** have the most look-alikes (several short runs through the same gap in one game), which neither the
-  chart nor pbp can tell apart.
+\* carries' eras are 2018-21 and 2022-25 (FTN's hashes and pbp's play durations start in 2022); 2018-21 is
+estimated on 2023-25 runs with those taken away. The *exact* play is right less often, ~46% / ~62% (calibrated
+`match_prob`), because a back's look-alike runs in one game often end within a few yards of each other. With your
+own Big Data Bowl tracking (`tracking=`, 2023-25) carries reach ~86-89% (2025: half the plays near-certain).
+† completions, graded on receivers' route charts the pass match never saw. Incompletions have no clean check
+(see below); their calibrated `location_prob` averages ~95% (2018-22) and ~85% (2023-25). A random pass of any
+outcome: ~97% (2018-22), ~90% (2023-25). `location_prob` is at least 0.7 for 98.5% of passes (2018-22) and 94% (2023-25).
+
+- **Passes and routes from 2023 on** are less precise because NGS stopped publishing its measured air yards after
+  2022, leaving pbp's scorer-spotted ones. No free per-play source replaces them. Errors concentrate in busy games
+  (a QB with 18+ completions: ~89% right in 2023+, vs ~95% with fewer), and on plays whose target has no route
+  chart - pass `route_matches=` so the plays that do have one are pinned by the receiver's catch point (~98%).
+- **Incomplete passes** are checked against the receiver's grey route; that check can't see much above ~90%
+  (an incompletion's ball often lands yards from the receiver), but agreement doesn't drop in busier games, so
+  their matching errors are few - in line with completions.
+- **Carry charts that don't add up.** Given the back's pbp runs (`extract.process_carry(image, meta, plays=...)`,
+  which the app does), a chart whose line colours don't match them - red for lost yards, yellow 0-5, green 6+ or a
+  touchdown - is read again by every reader with pbp's colour counts held, and the reading that best fits the plays
+  is kept. About 40% of charts disagree somewhere; re-reading them lifts carries landing within 3 yds of the tracked
+  tackle spot from 76% to 78% (2024-25).
+- **Carries** are the hard case: a back's 1-5 yard runs in one game look alike on the chart (the line's end is
+  within about a yard of the official gain) and pbp has little else to tell them apart. Since 2022 FTN's hashes and
+  pbp's play durations narrow it a lot; before that, a run is often matched to *a* plausible play rather than
+  certainly *the* play - `match_prob` says how likely each is, and is calibrated, so filter on it (or
+  `location_confident`) when the exact play matters.
 - **No defender-in-coverage** is available from any free source; pbp only names defenders who made a play
   (tackler, pass defended, interception, QB hit, ...), and those columns come along with every match.
 
 ---
 
 ## What's new
+
+0.6.0: **Much better matching to play-by-play, and the explorer web app.**
+
+- **Carries**: right location for ~84% of 2022+ runs and ~78% before (graded on Big Data Bowl tracked tackle
+  spots). New evidence: how long the play took (`end_clock_time`), FTN's hash for the *next* snap, the run's yards
+  from the play description when a foul cut pbp's, a shape model of the line (`carry_type.py`: gap, shotgun,
+  duration), the snap spot chained from the previous play, and yards offsets kept apart for touchdowns / runs out
+  of bounds. Implausible matches are flagged (`implausible`). Optional `tracking=` from your own Big Data Bowl
+  copy (`bdb.load_play_tracking`).
+- **Passes**: NGS Game Center receiver air yards and passer zones (`load_pbp_with_ftn(gamecenter=True)`), the
+  snap hash, a calibrated `location_prob`, and incompletions NGS didn't draw. The reader finds stacked and
+  peeking rings and reads the chart's own stat box.
+- **Routes**: a route-type model (`route_type.py`), time to throw, the next snap's hash, and the QB's pass-chart
+  dot for the same throw (`match_to_pbp(kind="route", pass_matches=...)`). `retrace_routes` re-reads tangled
+  charts using those dots and every reader (`pass_matches=`, `images=`), and the route reader takes catch hints.
+- **Carry charts that don't add up** to the back's pbp runs by colour are re-read (`extract.process_carry(plays=)`).
+- Shipped league calibration (`pbp_calibration.json`, `calibration="auto"`), so one player's charts match like
+  the whole league's.
+- **Explorer web app** (`service/`): any player and season read live, with filters, heatmaps, play details and
+  exports; `deploy/huggingface/` runs it on a Hugging Face Space.
 
 0.5.0: **Rebuilt route and carry readers.** Every line on a chart is now read at once - a stroke graph of the
 drawn lines, with all routes / carries chosen together by an integer program - so the chart's own counts always

@@ -19,11 +19,23 @@ venv/
 # jupyter
 .ipynb_checkpoints/
 
-# API database + pbp-match cache (regenerate with service/build_matches.py, service/build_db.py)
+# old API database + pbp-match cache (the app now matches live through the package)
 service/ngs.db
 service/matched/
+
+# web app
+service/web/node_modules/
+service/web/dist/
 
 # secrets
 .env
 .env.*
 !docs/*.png
+service/.cache/
+
+# local experiments and archives
+archive/
+route_training.pkl
+route_classifier.json
+route_nn.pt
+speedtest.ipynb

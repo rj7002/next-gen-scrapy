@@ -661,6 +661,8 @@ def _relax(G, heap, best, prev, rtype, penalty):
                 turn = _angle(d_in, G.tangent(f, n))
                 if (ph == "route" and st[1] == "after") or G.edges[e]["catch_bridge"]:
                     tc = CATCH_TURN * turn                # the catch: receivers often turn sharply upfield
+                    if ph == "route" and st[1] == "after":
+                        tc += _hint_cost(G, n)
                 elif turn > MAX_TURN:
                     continue
                 else:
@@ -752,6 +754,8 @@ def candidate_paths(G, lay, alts=3):
                     ec = _end_cost(G, n)
                     if ec is None or (ec > 0 and k > 0):
                         continue                      # hidden ends: first pass only
+                    if rtype == "COMPLETE" and ph == "route":
+                        ec += _hint_cost(G, n)        # caught at the end of the white line (no run after)
                     if c + ec < by_end.get(n, (np.inf,))[0]:
                         by_end[n] = (c + ec, (e, n, ph))
                 got, snap, used = 0, dict(penalty), []
@@ -762,7 +766,7 @@ def candidate_paths(G, lay, alts=3):
                         continue
                     seen.add(key)
                     cost = tot - sum(snap.get(e, 0.0) for e in edges) + PATH_BASE
-                    hidden_end = _end_cost(G, n) > 0
+                    hidden_end = (_end_cost(G, n) or 0.0) > 0
                     if cost > CAND_MAX_COST or (hidden_end and cost > HIDDEN_END_MAX_COST):
                         continue
                     if per_pair.get((s, n, rtype), 0) >= CAND_PER_PAIR:
@@ -945,9 +949,29 @@ def _jump_to_ring(G, cands):
     return [p for p in cands if p[5] or not any(G.edges[e].get("jump") for e in p[2])]
 
 
+HINT_COST = 12.0          # per yd a completed route's catch point lies from the nearest catch hint (past HINT_FREE)
+HINT_FREE, HINT_CAP = 1.5, 4.0           # (capped so a catch the hints don't cover - no dot - stays affordable)
+
+
+def _hint_cost(G, n):
+    """Cost of a catch at node n: by how far it is from the nearest catch hint (G.hint_xy, image px per yd scaled
+    by the field calibration). 0 when there are no hints."""
+    H = getattr(G, "hint_xy", None)
+    if H is None or not len(H):
+        return 0.0
+    hc = G._hint_cache.get(n)
+    if hc is None:
+        xy = G.hint_lay.img_to_field(np.asarray(G.nodes[n]["pos"], float)[None])[0]
+        d = float(np.min(np.hypot(H[:, 0] - xy[0], H[:, 1] - xy[1])))
+        hc = G._hint_cache[n] = HINT_COST * min(max(d - HINT_FREE, 0.0), HINT_CAP)
+    return hc
+
+
 def read_routes(image, expected, mode="union", lay=None, pix=None):
     """
-    expected: receptions, touchdowns, targets (None = unknown), max_yards. mode: "union" or "layers" (see the
+    expected: receptions, touchdowns, targets (None = unknown), max_yards, and optionally catches: field (x, y) of
+    each completion (e.g. the QB chart's dots for this receiver's catches): the path search charges HINT_COST per yd
+    a catch lands away from the nearest one, so tangles are untangled where the ball really went. mode: "union" or "layers" (see the
     module docstring). lay / pix (the line_colors() result) may be passed in to avoid recomputing them.
     Returns (routes, info) with routes in detect_routes() format: route_type, td, pts (field yd), seg
     ('route' / 'after_catch'), start_ok - plus px (the path in image pixels) and catch_px.
@@ -967,6 +991,9 @@ def read_routes(image, expected, mode="union", lay=None, pix=None):
         G = finish_graph(G, lay, rings, hide, attach=True)
     else:
         G = finish_graph(build_graph(col, union, width=width), lay, rings, hide, attach=True)
+    hints = expected.get("catches")
+    G.hint_xy = np.asarray(hints, float).reshape(-1, 2) if hints is not None and len(hints) else None
+    G.hint_lay, G._hint_cache = lay, {}
     cands = candidate_paths(G, lay)
     if expected.get("touchdowns"):
         reached = {p[1][-1] for p in cands}

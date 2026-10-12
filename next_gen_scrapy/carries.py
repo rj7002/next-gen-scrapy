@@ -63,6 +63,8 @@ def detect_carries(image, expected=None, method="best"):
     chart metadata - an extra, independent cap on top of the chart's own calibration (see
     routes.resample_field). Looser than for routes/passes: an individual carry can in principle run
     longer than the game total if other carries lost yardage, but it still catches gross errors.
+    `expected["by_color"]` (optional): {"LOSS", "SHORT", "LONG": carries} - how many lines of each colour (e.g.
+    from play-by-play, extract.carry_colours); the graph readers hold it as a soft constraint.
     `method`: "graph" / "layers" read all lines at once (carry_graph: a stroke graph of every line, all carries
     chosen together by an integer program so the counts hold and each carry's colour matches where it ends);
     "tracer" follows each colour separately and merges pieces; "best" (default) reads with layers and keeps
