@@ -341,7 +341,55 @@ def _path(v, digits=2):
     return [round(float(x), digits) for x in a]
 
 
-def _plays_json(kind: str, matched: pd.DataFrame, chart_df: pd.DataFrame) -> list[dict]:
+_route_guesses: dict[int, tuple] = {}     # season -> (store stamp, {(game_id, play_id): top route guess})
+
+
+def _routes_by_play(season: int) -> dict:
+    """{(game_id, play_id): route type read from the targeted receiver's route chart} for every route chart the
+    season data holds - what a QB's throws were thrown to."""
+    st = season_store("route", season)
+    if st is None:
+        return {}
+    with _store_lock:
+        stamp = _store.get(("route", season), (None,))[0]
+    hit = _route_guesses.get(season)
+    if hit and hit[0] == stamp:
+        return hit[1]
+    m = st[2]
+    out = {}
+    if len(m):
+        m = m.assign(path_x=[np.asarray(v, float) if v is not None else None for v in m["path_x"]],
+                     path_y=[np.asarray(v, float) if v is not None else None for v in m["path_y"]])
+        P = RT.predict_proba(m)
+        for g, pid, row in zip(m["game_id"], m["play_id"], P):
+            if np.isfinite(row).all():
+                out[(str(g), int(float(pid)))] = RT.CLASSES[int(np.argmax(row))]
+    _route_guesses[season] = (stamp, out)
+    return out
+
+
+def _route_tree(kind: str, matched: pd.DataFrame, guesses, season: int | None) -> list:
+    """(route, source) per matched pass / route for the route tree: NGS's own label for the targeted receiver's route
+    (participation `target_route`, unified to route_type's classes) where play-by-play has it, else the route read
+    from the chart line's shape - the route's own line, or for a pass the targeted receiver's route chart."""
+    by_play = _routes_by_play(season) if kind == "pass" and season else {}
+    out = []
+    for i, (_, r) in enumerate(matched.iterrows()):
+        key = (str(r.get("game_id")), int(float(r["play_id"]))) if pd.notna(r.get("play_id")) else None
+        ngs = r.get("target_route")
+        ngs = RT.UNIFY.get(ngs, ngs) if isinstance(ngs, str) else None
+        if ngs in RT.CLASSES:
+            out.append((ngs, "ngs"))
+        elif kind == "route" and guesses is not None and guesses[i]:
+            out.append((guesses[i][0][0], "shape"))
+        elif kind == "pass" and key in by_play:
+            out.append((by_play[key], "shape"))
+        else:
+            out.append((None, None))
+    return out
+
+
+def _plays_json(kind: str, matched: pd.DataFrame, chart_df: pd.DataFrame, season: int | None = None) -> list[dict]:
     filt_cols = [f["col"] for f in for_table(TABLE[kind])]
     cols = list(dict.fromkeys(CORE + EXTRA[kind] + filt_cols))
     out = []
@@ -357,6 +405,7 @@ def _plays_json(kind: str, matched: pd.DataFrame, chart_df: pd.DataFrame) -> lis
         P = RT.predict_proba(matched)
         pred = [None if not np.isfinite(r).all() else sorted(zip(RT.CLASSES, r.round(3).tolist()), key=lambda t: -t[1])[:4]
                 for r in P]
+    tree = _route_tree(kind, matched, pred, season) if kind in ("pass", "route") and len(matched) else None
     for i, (_, r) in enumerate(matched.iterrows()):
         d = {"id": f"{r.get('game_id')}:{r.get('play_id')}", "matched": True}
         for c in cols:
@@ -372,6 +421,8 @@ def _plays_json(kind: str, matched: pd.DataFrame, chart_df: pd.DataFrame) -> lis
         d["week"] = _week(r.get("week"), r.get("season_type"))
         if pred is not None:
             d["route_guess"] = pred[i]
+        if tree is not None and tree[i][0]:
+            d["tree_route"], d["tree_route_src"] = tree[i]
         out.append(d)
     # chart lines / dots the matcher couldn't place - still drawn, flagged unmatched
     out += _unmatched(kind, matched, chart_df, no_fit)
@@ -669,7 +720,7 @@ def _publish(job: Job, charts, chart_df, matched, notes):
         matched = pd.concat([s_matched, matched], ignore_index=True) if len(matched) else s_matched
     if job.kind == "pass" and job.pbp_ref is not None:
         job.undrawn = _undrawn(job, charts, job.pbp_ref, matched)
-    plays = _plays_json(job.kind, matched, chart_df) + _undrawn_json(job.kind, job.undrawn)
+    plays = _plays_json(job.kind, matched, chart_df, job.season) + _undrawn_json(job.kind, job.undrawn)
     first = charts[0]
     job.frame = matched
     job.data = dict(

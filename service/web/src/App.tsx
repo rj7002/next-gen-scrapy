@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { Clock, Info, MousePointerClick, SlidersHorizontal, X } from "lucide-react"
+import { Clock, MousePointerClick, SlidersHorizontal, X } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -14,7 +14,7 @@ import { type ExportFormat, FieldToolbar, Legend, legendSpec } from "@/component
 import { FilterPanel } from "@/components/app/FilterPanel"
 import { Header } from "@/components/app/Header"
 import { Insights } from "@/components/app/Insights"
-import { KpiGrid, MatchQuality } from "@/components/app/Kpis"
+import { KpiGrid } from "@/components/app/Kpis"
 import { Landing } from "@/components/app/Landing"
 import { PlayPanel } from "@/components/app/PlayPanel"
 import { LoadingCard, PlayerHero } from "@/components/app/PlayerHero"
@@ -358,19 +358,7 @@ export default function App() {
                     <TabsTrigger value="games">Games</TabsTrigger>
                   </TabsList>
                   <TabsContent value="insights" className="mt-3">
-                    <Insights kind={sel.kind} plays={visible} extra={[
-                      <MatchQuality key="mq" plays={visible} kind={sel.kind} />,
-                      data.notes.length > 0 && (
-                        <Card key="notes" className="gap-2 border-border/60 bg-card/50 p-4 text-xs leading-relaxed text-muted-foreground">
-                          <div className="flex items-center gap-2 text-sm font-medium text-foreground">
-                            <Info className="size-4" /> Notes
-                          </div>
-                          {data.notes.map((n) => (
-                            <p key={n}>{n}</p>
-                          ))}
-                        </Card>
-                      ),
-                    ]} />
+                    <Insights kind={sel.kind} plays={visible} />
                   </TabsContent>
                   <TabsContent value="plays" className="mt-3">
                     <PlayTable kind={sel.kind} plays={visible} selectedId={selectedId} onSelect={setSelectedId} />

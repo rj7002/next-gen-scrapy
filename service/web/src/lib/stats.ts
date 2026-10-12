@@ -1,5 +1,4 @@
 import { type Kind, type Play, weekLabel } from "./api"
-import { routeGuess } from "./colors"
 
 const num = (v: unknown): number | null => (v == null || v === "" || Number.isNaN(Number(v)) ? null : Number(v))
 const truthy = (v: unknown) => v === true || v === 1 || v === "1" || v === "true"
@@ -81,17 +80,6 @@ export function kpis(kind: Kind, plays: Play[]): Kpi[] {
   ]
 }
 
-export function matchQuality(plays: Play[]) {
-  const m = plays.filter((p) => p.matched && !p.estimated)   // only plays NGS drew have a location to be sure of
-  return {
-    matched: m.length,
-    unmatched: plays.filter((p) => !p.matched).length,
-    undrawn: plays.filter((p) => p.estimated).length,
-    confident: m.filter((p) => truthy(p.location_confident)).length,
-    avgLocation: mean(m.map((p) => num(p.location_prob))),
-  }
-}
-
 export function byWeek(kind: Kind, plays: Play[]) {
   const g = new Map<string, Play[]>()
   for (const p of plays) {
@@ -147,22 +135,6 @@ export function direction(kind: Kind, plays: Play[]) {
   })
 }
 
-export function routeMix(plays: Play[]) {
-  const g = new Map<string, Play[]>()
-  for (const p of plays) {
-    const r = routeGuess(p)
-    if (r) g.set(r, [...(g.get(r) ?? []), p])
-  }
-  return [...g.entries()]
-    .map(([route, ps]) => ({
-      route,
-      targets: ps.length,
-      catchRate: Math.round((100 * ps.filter((p) => p.route_type === "COMPLETE").length) / ps.length),
-      epa: Number((mean(ps.map((p) => num(p.epa))) ?? 0).toFixed(3)),
-    }))
-    .sort((a, b) => b.targets - a.targets)
-}
-
 export const GAIN_BINS: [string, number, number][] = [
   ["Loss", -99, 0],
   ["0", 0, 1],
@@ -204,4 +176,58 @@ export function situation(p: Play): string {
   const d = ["", "1st", "2nd", "3rd", "4th"][Number(p.down)] ?? ""
   const togo = p.yardline_100 != null && Number(p.ydstogo) >= Number(p.yardline_100) ? "Goal" : p.ydstogo
   return `${d} & ${togo}`
+}
+
+export interface TreeRoute { route: string; targets: number; catches: number; yards: number; epa: number; td: number }
+
+/** route-tree numbers per route type: tree_route is NGS's label for the target's route where play-by-play has it,
+ * else the route read from the chart line's shape (engine._route_tree) */
+export function routeTree(kind: Kind, plays: Play[]) {
+  const g = new Map<string, Play[]>()
+  let ngs = 0, shape = 0, missing = 0
+  for (const p of plays) {
+    if (!p.matched) continue
+    if (!p.tree_route) { missing++; continue }
+    if (p.tree_route_src === "ngs") ngs++
+    else shape++
+    g.set(p.tree_route, [...(g.get(p.tree_route) ?? []), p])
+  }
+  const routes: TreeRoute[] = [...g.entries()].map(([route, ps]) => ({
+    route,
+    targets: ps.length,
+    catches: ps.filter((p) => isCatch(p, kind)).length,
+    yards: sum(ps.map((p) => num(p.yards_gained))),
+    epa: mean(ps.map((p) => num(p.epa))) ?? 0,
+    td: ps.filter((p) => isTd(p, kind)).length,
+  }))
+  return { routes, total: ngs + shape, ngs, shape, missing }
+}
+
+// play-by-play's run_location + run_gap, outside-left to outside-right; guard = A gap, tackle = B, end = C
+export const GAPS: { key: string; label: string; letter: string | null; loc: string; gap: string | null }[] = [
+  { key: "le", label: "L Edge", letter: "C", loc: "left", gap: "end" },
+  { key: "lt", label: "L Tackle", letter: "B", loc: "left", gap: "tackle" },
+  { key: "lg", label: "L Guard", letter: "A", loc: "left", gap: "guard" },
+  { key: "mid", label: "Middle", letter: null, loc: "middle", gap: null },
+  { key: "rg", label: "R Guard", letter: "A", loc: "right", gap: "guard" },
+  { key: "rt", label: "R Tackle", letter: "B", loc: "right", gap: "tackle" },
+  { key: "re", label: "R Edge", letter: "C", loc: "right", gap: "end" },
+]
+
+export function runGaps(plays: Play[]) {
+  const runs = plays.filter((p) => p.matched && p.run_location)
+  const inGap = (p: Play, g: (typeof GAPS)[number]) => p.run_location === g.loc && (g.gap == null || p.run_gap === g.gap)
+  const gaps = GAPS.map((g) => {
+    const ps = runs.filter((p) => inGap(p, g))
+    return {
+      ...g,
+      carries: ps.length,
+      epa: mean(ps.map((p) => num(p.epa))) ?? 0,
+      ypc: mean(ps.map((p) => num(p.yards_gained))) ?? 0,
+      success: mean(ps.map((p) => (truthy(p.success) ? 1 : 0))) ?? 0,
+      td: ps.filter((p) => truthy(p.rush_touchdown)).length,
+    }
+  })
+  const total = gaps.reduce((n, g) => n + g.carries, 0)
+  return { gaps, total, unknown: plays.filter((p) => p.matched).length - total }
 }

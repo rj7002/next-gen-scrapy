@@ -3,9 +3,10 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { type ChartConfig, ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart"
 import { useReducedMotion } from "@/lib/motion"
 import type { Kind, Play } from "@/lib/api"
-import { ROUTE_COLORS } from "@/lib/colors"
-import { byWeek, coverage, depth, direction, gains, routeMix } from "@/lib/stats"
+import { byWeek, coverage, depth, direction, gains } from "@/lib/stats"
 import { cn } from "@/lib/utils"
+import { RouteTreePanel } from "./RouteTree"
+import { RunGapsPanel } from "./RunGaps"
 
 const POS = "#34d399"
 const NEG = "#fb7185"
@@ -96,29 +97,6 @@ function Direction({ kind, plays }: { kind: Kind; plays: Play[] }) {
   )
 }
 
-function RouteTree({ plays }: { plays: Play[] }) {
-  const animate = !useReducedMotion()
-  const data = routeMix(plays)
-  const config = { targets: { label: "Targets" } } satisfies ChartConfig
-  return (
-    <Panel title="Route tree" desc="Route type read from each line's shape">
-      <ChartContainer config={config} className="aspect-auto h-[190px] w-full">
-        <BarChart data={data} layout="vertical" margin={{ left: 4, right: 12 }}>
-          <XAxis type="number" hide />
-          <YAxis type="category" dataKey="route" {...axis} width={58} interval={0} />
-          <ChartTooltip cursor={{ fillOpacity: 0.06 }}
-            content={<ChartTooltipContent formatter={(v, _n, item) => `${v} targets · ${item.payload.catchRate}% caught · ${item.payload.epa >= 0 ? "+" : ""}${item.payload.epa} EPA`} />} />
-          <Bar isAnimationActive={animate} dataKey="targets" radius={4}>
-            {data.map((d) => (
-              <Cell key={d.route} fill={ROUTE_COLORS[d.route] ?? "#a1a1aa"} />
-            ))}
-          </Bar>
-        </BarChart>
-      </ChartContainer>
-    </Panel>
-  )
-}
-
 function Gains({ plays }: { plays: Play[] }) {
   const animate = !useReducedMotion()
   const data = gains(plays)
@@ -168,19 +146,20 @@ function Coverage({ plays }: { plays: Play[] }) {
   )
 }
 
-export function Insights({ kind, plays, extra = [] }: { kind: Kind; plays: Play[]; extra?: React.ReactNode[] }) {
+export function Insights({ kind, plays }: { kind: Kind; plays: Play[] }) {
   const panels = [
-    kind === "route" && <RouteTree key="tree" plays={plays} />,
     kind === "carry" && <Gains key="gains" plays={plays} />,
     kind !== "carry" && <Depth key="depth" kind={kind} plays={plays} />,
     <EpaByWeek key="week" kind={kind} plays={plays} />,
     <Direction key="dir" kind={kind} plays={plays} />,
     kind !== "carry" && coverage(plays).length > 0 && <Coverage key="cov" plays={plays} />,
-    ...extra,
   ].filter(Boolean)
   return (
+    <div className="flex flex-col gap-3">
+    {kind === "carry" ? <RunGapsPanel plays={plays} /> : <RouteTreePanel kind={kind} plays={plays} />}
     <div className={cn("grid gap-3 md:grid-cols-2", panels.length % 3 === 0 && "xl:grid-cols-3", panels.length === 5 && "xl:grid-cols-6 xl:[&>*:nth-child(-n+3)]:col-span-2 xl:[&>*:nth-child(n+4)]:col-span-3")}>
       {panels}
+    </div>
     </div>
   )
 }
