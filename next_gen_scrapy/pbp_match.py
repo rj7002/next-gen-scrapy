@@ -112,7 +112,8 @@ def add_gamecenter(pbp, cache_dir=None):
     return pbp
 
 
-def load_pbp_with_ftn(seasons, participation=True, gamecenter=True, gamecenter_cache=None):
+def load_pbp_with_ftn(seasons, participation=True, gamecenter=True, gamecenter_cache=None, ngs_distance=True,
+                      ngs_distance_cache=None):
     """
     Convenience loader: play-by-play left-joined with FTN charting (and, by default, NGS
     participation data) for the given season(s), as a pandas DataFrame. FTN charting doesn't cover
@@ -130,6 +131,10 @@ def load_pbp_with_ftn(seasons, participation=True, gamecenter=True, gamecenter_c
     gamecenter=True adds NGS Game Center's per-receiver air yards to every pass play (see add_gamecenter) - since
     2023 the only public source of NGS's measured air yards. It takes one request per game; if NGS can't be
     reached the columns are left empty, with a warning.
+
+    ngs_distance=True adds how far each play's ball carrier went, from NGS's public leader lists (ngs_distance.py):
+    the length of a carry's or a completed route's chart line. About 700 requests a season (one per team-week;
+    ngs_distance_cache keeps finished weeks on disk).
 
     FTN's own `season`/`week` columns are dropped before merging - identical to pbp's own on every
     matched row (verified against a real season), so keeping both would only produce pandas'
@@ -181,6 +186,13 @@ def load_pbp_with_ftn(seasons, participation=True, gamecenter=True, gamecenter_c
             warnings.warn(f"no NGS Game Center data ({e}); matching works without it, less precisely")
             for c in GAMECENTER_COLS:
                 pbp[c] = np.nan
+    if ngs_distance:
+        from .ngs_distance import add_ngs_distance
+        try:
+            pbp = add_ngs_distance(pbp, cache_dir=ngs_distance_cache)
+        except Exception as e:                      # NGS unreachable: match without it
+            warnings.warn(f"no NGS ball-carrier distances ({e}); matching works without them, less precisely")
+            pbp["ngs_carrier_dist"], pbp["ngs_dist_below"] = np.nan, np.nan
     return pbp
 
 
@@ -248,7 +260,7 @@ _DEFAULTS = {
               "qbloc": {"S": (-4.4, 1.8), "U": (-6.4, 1.9), "P": (-6.0, 2.0)},
               "rundir": {"left": (-6.0, 6.0), "middle": (0.0, 4.0), "right": (6.0, 6.0)},
               # pbp seconds snap -> end of play minus the line's predicted seconds (Laplace offset, scale)
-              "dur": (0.0, 0.6)},
+              "dur": (0.0, 0.6), "dur_ngs": (0.0, 0.75)},
 }
 _USE_ROUTE_X = True      # switch for A/B evaluation of the route-type term
 _USE_OOB = True          # switch for A/B evaluation of the out-of-bounds / fumble terms
@@ -289,6 +301,29 @@ _ZONE_THIRD = 53.33 / 6  # a third of the field's width, either side of the midd
 _ZONE_B = 0.5            # spread (yards) of a zone's yards vs pbp yards gained (equal on ~99% of clean zones)
 _USE_PASS_HASH = True    # pass/route: shift the side term's expected x by FTN starting_hash (2022+)
 _HASH_SHIFT = 1.5        # yards a throw's x moves per hash (L = -1, M = 0, R = +1) before calibration
+# ...which depends on the throw (confident 2023-25 matches): short throws move ~2 yd per hash, wide ones 10-20 yds
+# downfield ~0.5, deep ones not at all - receivers spread to the field's own landmarks, not the ball's
+_HASH_SHIFT_TAB = True
+_HASH_SHIFT_TAB_BUCKETS = ("COMPLETE", "TOUCHDOWN")
+# FTN's is_catchable_ball: a catchable incompletion's dot sits about twice as close to pbp air yards (depth residual
+# MAD 0.63 yd vs 1.21 uncatchable, confident 2023-25 matches) - scale the incompletion depth spread by it
+_USE_CATCHABLE = False   # measured: no gain on tracked incompletions (truth set) - kept switchable
+_CATCHABLE_SCALE = {1: 0.6, 0: 1.15}
+_HASH_SHIFT_BY = {"side": [(10.0, 2.0), (20.0, 0.5), (np.inf, 0.0)], "middle": [(20.0, 1.9), (np.inf, 0.0)]}
+
+
+def _hash_shift_per_play(side, air, hash_x):
+    """Per-play x shift (yd) of the expected throw from the hash, by pass_location and pbp air yards."""
+    side, air, hx = np.asarray(side, object), np.asarray(air, float), np.nan_to_num(np.asarray(hash_x, float))
+    out = np.zeros(len(hx))
+    for kind, bands in _HASH_SHIFT_BY.items():
+        sel = (side == "middle") if kind == "middle" else np.isin(side, ["left", "right"])
+        lo = -np.inf
+        for hi, v in bands:
+            m = sel & (np.nan_to_num(air, nan=5.0) >= lo) & (np.nan_to_num(air, nan=5.0) < hi)
+            out[m] = v
+            lo = hi
+    return out * hx
 _TTT_COEF = (3.19, 3.73, 0.69)   # route yards before the catch ~ a + b * time_to_throw (s) + c * air yards,
                                  # fitted on ~33k confidently matched routes (2018-25)
 
@@ -403,6 +438,8 @@ def _chart_features(chart, kind):
         f["end_sideline"] = [abs(px[-1]) >= _SIDELINE_YD for px in chart["path_x"]]
         f["loc_x"], f["loc_y"] = f["x"], f["depth"]
         f["end_x"] = [px[-1] for px in chart["path_x"]]
+        f["path_len"] = [float(np.hypot(np.diff(np.asarray(px, float)), np.diff(np.asarray(py, float))).sum())
+                         for px, py in zip(chart["path_x"], chart["path_y"])]
         f["route_len"] = [float(np.hypot(np.diff(np.asarray(px[:i + 1], float)), np.diff(np.asarray(py[:i + 1], float))).sum())
                           for px, py, i in zip(chart["path_x"], chart["path_y"], ci)]
         if _USE_ROUTE_TYPE:
@@ -413,6 +450,7 @@ def _chart_features(chart, kind):
         f["gain"] = chart["y_coord"]
         f["x0"] = [px[0] for px in chart["path_x"]]
         f["y0"] = [py[0] for py in chart["path_y"]]
+        f["path_len"] = [float(np.hypot(np.diff(px), np.diff(py)).sum()) for px, py in zip(chart["path_x"], chart["path_y"])]
         f["cross"] = [_crossing_x(px, py) - px[0] for px, py in zip(chart["path_x"], chart["path_y"])]
         f["dx_end"] = [px[-1] - px[0] for px in chart["path_x"]]
         f["loc_x"] = [px[-1] for px in chart["path_x"]]
@@ -446,6 +484,7 @@ def _pbp_features(pbp, kind):
     if kind in ("pass", "route"):
         ngs = pbp["ngs_air_yards"] if "ngs_air_yards" in pbp else pd.Series(np.nan, index=pbp.index)
         f["ngs"], f["air"] = ngs.astype(float), pbp["air_yards"].astype(float)
+        f["catchable"] = pbp["is_catchable_ball"].astype(float) if "is_catchable_ball" in pbp else np.nan
         f["side"] = pbp["pass_location"]
         f["hash_x"] = (pbp["starting_hash"].map({"L": -1.0, "M": 0.0, "R": 1.0}) if "starting_hash" in pbp
                        else pd.Series(np.nan, index=pbp.index))
@@ -478,6 +517,8 @@ def _pbp_features(pbp, kind):
             if "target_route" in pbp:
                 lab = pbp["target_route"].replace(_RT.UNIFY)
                 f["rt_class"] = lab.map({c: i for i, c in enumerate(_RT.CLASSES)}).astype(float)
+            f["ngs_dist"] = pbp["ngs_carrier_dist"].astype(float) if "ngs_carrier_dist" in pbp else np.nan
+            f["screen"] = pbp["is_screen_pass"].astype(float) if "is_screen_pass" in pbp else np.nan
             f["yac"] = pbp["yards_after_catch"].astype(float)
             f["oob"] = pbp["out_of_bounds"].astype(float) if "out_of_bounds" in pbp else np.nan
             ttt = pbp["time_to_throw"].astype(float) if "time_to_throw" in pbp else pd.Series(np.nan, index=pbp.index)
@@ -499,6 +540,8 @@ def _pbp_features(pbp, kind):
         f["gun"] = pbp["shotgun"].astype(float) if "shotgun" in pbp else np.nan
         f["qbloc"] = pbp["qb_location"] if "qb_location" in pbp else None
         f["rundir"] = pbp["run_location"]
+        f["ngs_dist"] = pbp["ngs_carrier_dist"].astype(float) if "ngs_carrier_dist" in pbp else np.nan
+        f["ngs_below"] = pbp["ngs_dist_below"].astype(float) if "ngs_dist_below" in pbp else np.nan
         f["oob"] = pbp["out_of_bounds"].astype(float) if "out_of_bounds" in pbp else np.nan
         f["fumble"] = pbp["fumble_lost"].astype(float) if "fumble_lost" in pbp else np.nan
         y = pbp["yards_gained"].astype(float)
@@ -507,6 +550,13 @@ def _pbp_features(pbp, kind):
         f["ct_gap_lab"], f["ct_gun_lab"] = g_lab.astype(float), s_lab.astype(float)
         adj = sum(w * (pbp[col].fillna(0).to_numpy(float) == 1) for col, w in _DUR_ADJ.items() if col in pbp)
         f["dur"] = _CT.play_duration(pbp) - adj
+        # where FTN's clock is missing (before 2022, the newest week), NGS's distance and top speed say it nearly as
+        # well: seconds ~ 1.0 + 1.41 x distance / top speed (yd/s), ~0.42 s MAD on 2024 runs (ngs_distance.py)
+        if "ngs_carrier_dist" in pbp and "ngs_max_speed" in pbp:
+            spd = pbp["ngs_max_speed"].astype(float) * 0.4889             # mph -> yd/s
+            prox = _DUR_NGS_COEF[0] + _DUR_NGS_COEF[1] * pbp["ngs_carrier_dist"].astype(float) / spd.where(spd > 0)
+            f["dur_ngs"] = prox.where(f["dur"].isna())
+
     return f
 
 
@@ -582,7 +632,9 @@ def _calibrate(kind, pairs):
             h = b["hash_x"]
             if (h == -1).sum() >= _MIN_CALIB and (h == 1).sum() >= _MIN_CALIB:
                 p["hash_shift"] = float((resid[h == 1].median() - resid[h == -1].median()) / 2)
-            x_side = c["x"] - p.get("hash_shift", _HASH_SHIFT) * b["hash_x"].fillna(0.0)
+            flat = p.get("hash_shift", _HASH_SHIFT) * b["hash_x"].fillna(0.0)
+            tabbed = np.isin(np.asarray(bucket, object), _HASH_SHIFT_TAB_BUCKETS) if _HASH_SHIFT_TAB else False
+            x_side = c["x"] - np.where(tabbed, _hash_shift_per_play(b["side"], b["air"], b["hash_x"]), flat)
         fit_side("side", x_side, b["side"])
         # depth agreement differs a lot by outcome (a completion's dot is ~2x tighter to pbp than an
         # incompletion's) and grows with depth: one offset/spread per (source, outcome, depth band)
@@ -617,6 +669,8 @@ def _calibrate(kind, pairs):
         fit_side("rundir", c["dx_end"], b["rundir"])
         if "dur_hat" in c and "dur" in b:
             fit("dur", b["dur"] - c["dur_hat"])
+        if "dur_hat" in c and "dur_ngs" in b:
+            fit("dur_ngs", b["dur_ngs"] - c["dur_hat"])
     return p
 
 
@@ -633,10 +687,12 @@ def _side_cost(x, labels, table, shift=None):
     return out
 
 
-def _hash_shift(pf, params):
+def _hash_shift(pf, params, bucket=None):
     """Per-play shift of the expected throw x from FTN starting_hash (0 where unknown or switched off)."""
     if not _USE_PASS_HASH or "hash_x" not in pf:
         return None
+    if _HASH_SHIFT_TAB and "side" in pf and "air" in pf and bucket in _HASH_SHIFT_TAB_BUCKETS:
+        return _hash_shift_per_play(pf["side"].to_numpy(object), pf["air"].to_numpy(float), pf["hash_x"].to_numpy(float))
     return params.get("hash_shift", _HASH_SHIFT) * np.nan_to_num(pf["hash_x"].to_numpy(float))
 
 
@@ -661,8 +717,15 @@ def _cost_matrix(kind, cf, pf, params, bucket, split_link=False):
         else:
             d_cost = np.where(use_ngs[None, :], _nll_laplace(depth - bn - np.nan_to_num(ngs)[None, :], sn),
                               _nll_laplace(depth - ba - np.nan_to_num(air)[None, :], sa))
+        if kind == "pass" and bucket == "INCOMPLETE" and _USE_CATCHABLE and "catchable" in pf:
+            cat = pf["catchable"].to_numpy(float)
+            k = np.where(cat == 1, _CATCHABLE_SCALE[1], np.where(cat == 0, _CATCHABLE_SCALE[0], 1.0))
+            sa_k = (sa_ if tab else np.full(len(air), sa, float)) * k
+            oa_k = oa if tab else np.full(len(air), ba, float)
+            d_air = _nll_laplace(depth - oa_k[None, :] - np.nan_to_num(air)[None, :], sa_k[None, :])
+            d_cost = np.where(use_ngs[None, :], d_cost, d_air)
         d_cost = np.where((~use_ngs & ~np.isfinite(air))[None, :], _NLL_MISSING, d_cost)
-        hs = _hash_shift(pf, params)
+        hs = _hash_shift(pf, params, bucket)
         side = _side_cost(cf["x"].to_numpy(float), pf["side"].to_numpy(object), params["side"], hs)
         if "side_route" in pf and _USE_ROUTE_X:
             sharper = _side_cost(cf["x"].to_numpy(float), pf["side_route"].to_numpy(object), _ROUTE_X, hs)
@@ -675,6 +738,8 @@ def _cost_matrix(kind, cf, pf, params, bucket, split_link=False):
             C = C - pf["drawn_logit"].to_numpy(float)[None, :]
         if kind == "route" and _USE_ROUTE_TYPE and "rt_class" in pf and "rt0" in cf:
             C = C + _route_type_cost(cf, pf)
+        if kind == "route" and _USE_SCREEN and "screen" in pf and "rt0" in cf:
+            C = C + _screen_cost(cf, pf)
         if kind == "route" and _USE_TTT and "len_hat" in pf:
             lh = pf["len_hat"].to_numpy(float)
             bt, st = params["ttt"]
@@ -713,6 +778,10 @@ def _cost_matrix(kind, cf, pf, params, bucket, split_link=False):
             C = C + _side_cost(cf["x0"].to_numpy(float), pf["hash"].to_numpy(object), params["hash"])
         if _USE_QBLOC and "qbloc" in pf:
             C = C + _side_cost(cf["y0"].to_numpy(float), pf["qbloc"].to_numpy(object), params["qbloc"])
+        if _USE_NGS_DIST and _NGS_DIST_IN_C and "ngs_dist" in pf and "path_len" in cf:
+            nd = _ngs_dist_cost(cf["path_len"].to_numpy(float), pf["ngs_dist"].to_numpy(float),
+                                pf["ngs_below"].to_numpy(float), pf["gain"].to_numpy(float))
+            C = C + _NGS_DIST_W * (nd - nd.mean(axis=1, keepdims=True))
         if _USE_RUNDIR and "rundir" in pf:
             C = C + _side_cost(cf["dx_end"].to_numpy(float), pf["rundir"].to_numpy(object), params["rundir"])
         if _USE_OOB:
@@ -720,6 +789,8 @@ def _cost_matrix(kind, cf, pf, params, bucket, split_link=False):
             C = C + _flag_cost(cf["fumble"], pf["fumble"], {1: _P_FUMBLE_AGREE, 0: 1 - _P_FUMBLE_AGREE})
         if _USE_DUR and "dur_hat" in cf and "dur" in pf:
             C = C + _DUR_W * _dur_cost(cf["dur_hat"].to_numpy(float), pf["dur"].to_numpy(float), params.get("dur", _DEFAULTS["carry"]["dur"]))
+        if _USE_DUR_NGS and "dur_hat" in cf and "dur_ngs" in pf:
+            C = C + _DUR_W * _dur_cost(cf["dur_hat"].to_numpy(float), pf["dur_ngs"].to_numpy(float), params.get("dur_ngs", _DUR_NGS_DEFAULT))
         if "gclass" in cf and "gclass" in pf:
             same = cf["gclass"].to_numpy(object)[:, None] == pf["gclass"].to_numpy(object)[None, :]
             known = pd.notna(pf["gclass"].to_numpy(object))[None, :] & pd.notna(cf["gclass"].to_numpy(object))[:, None]
@@ -745,11 +816,22 @@ def _cost_matrix(kind, cf, pf, params, bucket, split_link=False):
     if kind == "route" and _USE_NEXT_HASH_ROUTE and bucket == "COMPLETE" and "next_hash" in pf:
         # a completion ends where the receiver went down: the next snap's hash says which side that was
         G = G + _NEXT_W_ROUTE * _next_hash_cost(cf["end_x"].to_numpy(float), pf["next_hash"].to_numpy(object))
+    if kind == "route" and _USE_NGS_DIST_ROUTE and bucket in ("COMPLETE", "TOUCHDOWN") and "ngs_dist" in pf and "path_len" in cf:
+        # NGS's distance for the receiver: his whole path, route and run after the catch - the line's length
+        nd = _ngs_dist_cost(cf["path_len"].to_numpy(float), pf["ngs_dist"].to_numpy(float),
+                            np.full(len(pf), np.nan), table=_NGS_DIST_LR_ROUTE)
+        G = G + _NGS_DIST_W_ROUTE * (nd - nd.mean(axis=1, keepdims=True))
+    if kind == "pass" and _USE_NEXT_HASH_PASS and bucket == "COMPLETE" and "next_hash" in pf:
+        G = G + _NEXT_W_PASS * _next_hash_cost(cf["x"].to_numpy(float), pf["next_hash"].to_numpy(object))
     if kind == "carry" and _USE_NEXT_HASH and "next_hash" in pf:
         nh = pf["next_hash"].to_numpy(object)
         if "tk_next_ball" in pf:              # tracking's spot for the next snap says it more precisely
             nh = np.where(np.isfinite(pf["tk_next_ball"].to_numpy(float)), None, nh)
         G = G + _NEXT_W * _next_hash_cost(cf["loc_x"].to_numpy(float), nh)
+    if kind == "carry" and _USE_NGS_DIST and not _NGS_DIST_IN_C and "ngs_dist" in pf and "path_len" in cf:
+        nd = _ngs_dist_cost(cf["path_len"].to_numpy(float), pf["ngs_dist"].to_numpy(float), pf["ngs_below"].to_numpy(float),
+                            pf["gain"].to_numpy(float))
+        G = G + _NGS_DIST_W * (nd - nd.mean(axis=1, keepdims=True))
     if kind == "carry" and _USE_SPOT and _SPOT_IN_G:
         bx = pf["bx"].to_numpy(float) if "bx" in pf else np.full(len(pf), np.nan)
         sc = _spot_cost(cf["x0"].to_numpy(float), pf["hash"].to_numpy(object), bx, pf["gun"].to_numpy(float))
@@ -775,6 +857,11 @@ def _cost_matrix(kind, cf, pf, params, bucket, split_link=False):
     if split_link == 3:
         return C, L, G
     return (C, L + G) if split_link else C + L + G
+
+
+_USE_DUR_NGS = False     # carries without FTN's clock: the duration NGS's distance and top speed imply - measured: no gain once the distance term is on
+_DUR_NGS_COEF = (1.011, 1.411)
+_DUR_NGS_DEFAULT = (0.0, 0.75)   # (offset, Laplace scale): the line's ~0.42 s and the proxy's ~0.42 s together
 
 
 def _dur_cost(dur_hat, dur, params):
@@ -811,6 +898,30 @@ def _carry_type_cost(cf, pf):
     w = np.where(pd.notna(pf["hash"].to_numpy(object)), _CT_GUN_WITH_HASH, _CT_W[1]) if "hash" in pf else np.full(len(pf), _CT_W[1])
     out += np.where((s >= 0) & np.isfinite(g), -w[None, :] * np.log(q / pri), 0.0)
     return out
+
+
+_USE_SCREEN = True       # routes: FTN is_screen_pass vs how screen-like the line is, where participation has no route
+_SCREEN_Q = {1: 0.85, 0: 0.01}   # P(the route is a SCREEN | FTN's flag)
+_SCREEN_W = 1.0
+
+
+def _screen_cost(cf, pf):
+    """-log likelihood ratio of each line's shape under each play's FTN screen flag, for plays without participation's
+    route (the season in progress): the flag says SCREEN or not, the route model how screen-like the line is."""
+    K = len(_RT.CLASSES)
+    si = _RT.CLASSES.index("SCREEN")
+    P = cf[[f"rt{i}" for i in range(K)]].to_numpy(float)
+    m = _RT_MODEL if isinstance(_RT_MODEL, dict) else _RT._load()
+    prior = m["prior"] if m is not None and "prior" in m else np.full(K, 1.0 / K)
+    flag = pf["screen"].to_numpy(float)
+    has_route = np.isfinite(pf["rt_class"].to_numpy(float)) if "rt_class" in pf else np.zeros(len(flag), bool)
+    known = np.isfinite(flag) & ~has_route
+    ratio = (1 - _RT_EPS) * P / prior[None, :] + _RT_EPS
+    p_scr = ratio[:, si][:, None]
+    p_oth = ((ratio * prior[None, :]).sum(1) - ratio[:, si] * prior[si])[:, None] / (1 - prior[si])
+    q = np.where(flag == 1, _SCREEN_Q[1], _SCREEN_Q[0])[None, :]
+    lr = -_SCREEN_W * np.log(q * p_scr + (1 - q) * p_oth)
+    return np.where(known[None, :] & np.isfinite(P).all(1)[:, None], lr, 0.0)
 
 
 def _route_type_cost(cf, pf):
@@ -982,6 +1093,8 @@ _NEXT_HASH = (1.5, 0.5, 0.02)   # chart end x where the next snap's label turns 
 _NEXT_W = 1.5
 _USE_NEXT_HASH_ROUTE = True   # routes: where a completion's line ends vs FTN's hash for the next snap (2022+)
 _NEXT_W_ROUTE = 1.0
+_USE_NEXT_HASH_PASS = True    # passes: a completion's dot (the catch) vs the next snap's hash - the run after the
+_NEXT_W_PASS = 0.5            # catch moves it, so weaker than a route line's end
 
 
 def _next_snap_keys(pbp_df, games):
@@ -1039,6 +1152,43 @@ def _next_hash_cost(ex, labels):
     known = np.isin(lab, ["L", "M", "R"]) & np.isfinite(ex)
     ratio = p / np.maximum(np.where(known, p, np.nan).mean(axis=0, keepdims=True) if len(ex) else p, 1e-9)
     return np.where(known, -np.log(np.where(known, ratio, 1.0)), 0.0)
+
+
+_USE_NGS_DIST = True     # carries: the line's length vs how far NGS says the ball carrier went (ngs_distance.py)
+_NGS_DIST_W = 0.5
+_NGS_DIST_IN_C = False   # with the untempered external terms, at half weight (it partly repeats the gain; measured best)
+# log P(line length - NGS distance | the right run) / P(... | another run by the same back that game), measured on
+# confident 2023-25 matches: most right pairs agree within a yard, but a line can run several yds short of NGS's
+# distance (the back's steps before the handoff, a hidden line start) - so a measured ratio, not a Gaussian
+_NGS_DIST_LR = ([-60, -15, -10, -7, -5, -3, -2, -1, 0, 1, 2, 3, 5, 7, 10, 15, 60],
+                [-2.91, -2.13, -1.17, -0.35, 0.25, 0.55, 0.88, 2.14, 1.63, 0.12, -0.14, -0.60, -1.00, -1.60, -2.23, -2.85])
+_USE_NGS_BELOW = False   # measured: hurts (2018-21-style -0.9 pt); kept switchable
+# the same for completed routes (the receiver's whole line) vs another catch by the same receiver that game
+_USE_NGS_DIST_ROUTE = True
+_NGS_DIST_W_ROUTE = 0.5
+_NGS_DIST_LR_ROUTE = ([-60, -15, -10, -7, -5, -3, -2, -1, 0, 1, 2, 3, 5, 7, 10, 15, 60],
+                      [-2.22, -1.65, -0.94, -0.55, -0.10, 0.50, 1.36, 2.56, 1.89, 0.30, -0.10, -0.51, -0.75, -1.09, -1.47, -1.95])
+_NGS_BELOW_SCALE = 1.2   # a play missing from a full list went less far than its shortest entry (84% of lines are)
+
+
+def _ngs_dist_cost(L, dist, below, gain=None, table=None):
+    """(n_chart, n_pbp) cost (-log likelihood ratio) of each line's length under each play's NGS ball-carrier
+    distance - or, for a play the (full) list left out, under 'it went less far than the list's shortest'. 0 where
+    NGS says nothing."""
+    L = np.asarray(L, float)[:, None]
+    dist, below = np.asarray(dist, float)[None, :], np.asarray(below, float)[None, :]
+    edges, lr = (np.asarray(t, float) for t in (table or _NGS_DIST_LR))
+    centres = np.clip((edges[:-1] + edges[1:]) / 2, -20, 20)
+    r = L - np.nan_to_num(dist)
+    cost = -np.interp(r, centres, lr)
+    known = np.isfinite(dist) & np.isfinite(L)
+    out = np.where(known, cost, 0.0)
+    if _USE_NGS_BELOW:
+        p_below = 1.0 / (1.0 + np.exp(-(np.nan_to_num(below) - L) / _NGS_BELOW_SCALE))
+        bel = np.isfinite(below) & ~np.isfinite(dist) & np.isfinite(L)
+        # P(line this long | went less far than the bound) vs the same for a typical other run (~half are)
+        out = np.where(bel, -np.log((0.05 + 0.95 * p_below) / 0.5), out)
+    return out
 
 
 _USE_SPOT = True         # carries: one term for where the back started across the field (replaces hash + chain terms)
@@ -1320,7 +1470,7 @@ def match_to_pbp(chart_df, pbp_df, kind, route_matches=None, return_params=False
         key = list(zip(pbp_typed["old_game_id"].astype(str), pbp_typed["play_id"].astype(float)))
         pfeat_all["tk_x"] = [tk["end_x"].get(k, np.nan) for k in key]
         pfeat_all["tk_y"] = [tk["end_y"].get(k, np.nan) for k in key]
-    if (kind == "carry" and _USE_NEXT_HASH) or (kind == "route" and _USE_NEXT_HASH_ROUTE):
+    if (kind == "carry" and _USE_NEXT_HASH) or (kind == "route" and _USE_NEXT_HASH_ROUTE) or (kind == "pass" and _USE_NEXT_HASH_PASS):
         nh = _next_snap_hash(pbp_df, set(chart_reduced["game_id_nflverse"].dropna()), kind)
         pfeat_all["next_hash"] = [nh.get((g, q)) for g, q in zip(pbp_typed["game_id"], pbp_typed["play_id"])]
     if kind == "route" and pass_matches is not None and len(pass_matches):

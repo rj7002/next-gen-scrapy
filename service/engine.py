@@ -223,6 +223,7 @@ PBP_TTL_CURRENT = 15 * 60     # nflverse adds each game's play-by-play a few hou
                               # season in progress this often
 
 
+NGS_DIST_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache", "ngsdist")   # finished weeks' lists
 PBP_RETRY_WAITS = (2, 5, 10, 20)   # seconds; GitHub now and then resets the connection mid-download (nflverse's
                                    # files are release assets) - a retry nearly always goes through
 
@@ -257,7 +258,7 @@ def pbp(season: int, need_games=(), min_age: float = 120) -> tuple[float, pd.Dat
                 return hit
             import nflreadpy
             nflreadpy.clear_cache()           # its own in-memory cache would hand back the same stale copy
-        hit = (time.time(), _with_retries(lambda: load_pbp_with_ftn([season])))
+        hit = (time.time(), _with_retries(lambda: load_pbp_with_ftn([season], ngs_distance_cache=NGS_DIST_CACHE)))
         with _lock:
             _pbp[season] = hit
             while len(_pbp) > PBP_KEEP:

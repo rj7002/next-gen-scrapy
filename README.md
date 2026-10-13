@@ -389,7 +389,7 @@ third = passes[(passes.down == 3) & passes.location_confident]
 
 ### `load_pbp_with_ftn`
 
-#### `load_pbp_with_ftn(seasons, participation=True, gamecenter=True, gamecenter_cache=None)`
+#### `load_pbp_with_ftn(seasons, participation=True, gamecenter=True, gamecenter_cache=None, ngs_distance=True, ngs_distance_cache=None)`
 
 Loads nflverse play-by-play for `seasons` (an int or a list) and left-joins:
 
@@ -417,6 +417,16 @@ Loads nflverse play-by-play for `seasons` (an int or a list) and left-joins:
   |---|---|
   | `ngs_receiver_targets`, `ngs_receiver_avg_air_yards` | The targeted receiver's targets in the game and NGS's average air yards over them (each team's top five receivers) - his targets' depths must add up to this |
   | `ngs_passer_zones` | The passer's completions and yards per zone, as `"depth,section,completions,yards;..."` (depth 0 behind the line / 1 0-9 / 2 10-19 / 3 20+ air yards; section 0-2 the left / middle / right third of the field) - the completions drawn in a zone must add up to its yards |
+- **NGS ball-carrier distance** (`ngs_distance=True`, ~1,400 requests a season - two lists per team-week;
+  `ngs_distance_cache=` a folder for finished weeks): how far the runner or receiver went on the play, from NGS's
+  public leader lists, for every game 2018 on (~91% of runs, ~97% of catches). It is the length of the carry's or
+  completed route's chart line, so `match_to_pbp` uses it to tell a back's look-alike runs apart.
+
+  | Column | Meaning |
+  |---|---|
+  | `ngs_carrier_dist` | Yards the ball carrier covered on the play (NGS tracking) |
+  | `ngs_max_speed` | His top speed (mph) |
+  | `ngs_dist_below` | For a play missing from its team-week's full list: it went less far than this |
 
   `add_gamecenter(pbp, cache_dir=None)` adds these to a pbp table you already have; `next_gen_scrapy.gamecenter`
   has the raw tables (`game_tables(game_ids)`).
@@ -837,6 +847,16 @@ outcome: ~97% (2018-22), ~90% (2023-25). `location_prob` is at least 0.7 for 98.
 ---
 
 ## What's new
+
+0.6.1: **Outside data for matching: NGS ball-carrier distances.**
+
+- **Carries and routes**: how far the ball carrier went on each play, from NGS's public leader lists
+  (`next_gen_scrapy/ngs_distance.py`, added by `load_pbp_with_ftn`), against the length of the chart line - every
+  season 2018 on, including the one in progress. Carries +0.6 pt (with FTN) / +1.1 pt (without) within 3 yds of
+  the tracked end, routes +0.3 / +0.7 pt (without participation), more confident matches throughout. Charts that
+  are re-read use it too.
+- **Passes**: the hash moves a throw's expected x by depth (short throws ~2 yds per hash, deep ones not at all),
+  and a completion's next-snap hash counts; routes use FTN's screen flag while participation's routes are missing.
 
 0.6.0: **Much better matching to play-by-play, and the explorer web app.**
 
