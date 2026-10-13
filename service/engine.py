@@ -241,6 +241,7 @@ def _with_retries(fn):
 
 
 _refreshing: set[int] = set()
+_unreadable: set[tuple] = set()      # (gameId, esbId, imageName) of charts that failed to read: not retried per load
 
 
 def pbp(season: int, need_games=(), min_age: float = 120) -> tuple[float, pd.DataFrame]:
@@ -328,10 +329,10 @@ def warm():
     first visitor doesn't wait for the downloads."""
     def run():
         try:
-            season = current_season()
-            pbp(season)
-            for kind in KINDS:
-                season_store(kind, season)
+            for season in (current_season(), current_season() - 1):     # this season and last: most visits
+                pbp(season)
+                for kind in KINDS:
+                    season_store(kind, season)
         except Exception:
             traceback.print_exc()
     threading.Thread(target=run, daemon=True).start()
@@ -375,6 +376,7 @@ def _read_charts(kind: str, charts: list[dict], progress, plays_for=None, keep=N
                 rows += f.result()
             except Exception as e:                      # a blank / unreadable chart: skip it, say so
                 notes.append(f"week {S.week_label(c)}: chart couldn't be read ({type(e).__name__})")
+                _unreadable.add((c["gameId"], c["esbId"], c.get("imageName")))
             done[0] += 1
             progress(done[0])
     return pd.DataFrame(rows), notes
@@ -730,7 +732,8 @@ def _run(job: Job, charts: list[dict]):
         stored = _stored(job.kind, charts, p)
         covered = stored[2] if stored else set()
         job.stored = stored[:2] if stored else None
-        live = [c for c in charts if (int(c["gameId"]), c["esbId"]) not in covered]
+        live = [c for c in charts if (int(c["gameId"]), c["esbId"]) not in covered
+                and (c["gameId"], c["esbId"], c.get("imageName")) not in _unreadable]
         notes = [f"{len({k[0] for k in covered})} games loaded from the season data (updated daily)"] if covered else \
             ([] if data_status.endswith("data release") else [f"Season data unavailable - {data_status}; charts read live"])
         if not live:
