@@ -88,8 +88,8 @@ export function Field(props: Props) {
   const tilt0 = (DEFAULT_CAM.tilt * Math.PI) / 180
   const lift = threeD && svgH ? svgH - (svgH * Math.cos(tilt0) * persp) / (persp + svgH * Math.sin(tilt0)) - 10 : 0
 
-  // 3D camera: drag to orbit (sideways turns the field, up/down tilts it), shift-drag to pan, pinch or ⌘/ctrl +
-  // scroll to zoom, double-click to reset
+  // 3D camera: drag to orbit (sideways spins the field all the way round, up/down tilts it), shift-drag to pan,
+  // pinch or ⌘/ctrl + scroll to zoom, double-click to reset
   const [cam, setCam] = useState(DEFAULT_CAM)
   const [dragging, setDragging] = useState(false)
   const drag = useRef<{ x: number; y: number; cam: typeof DEFAULT_CAM; pan: boolean; moved: boolean } | null>(null)
@@ -103,7 +103,7 @@ export function Field(props: Props) {
     const onWheel = (e: WheelEvent) => {
       if (!e.ctrlKey && !e.metaKey) return       // plain scrolling still scrolls the page
       e.preventDefault()
-      setCam((c) => ({ ...c, zoom: clamp(c.zoom * Math.exp(-e.deltaY * 0.01), 0.7, 3) }))
+      setCam((c) => ({ ...c, zoom: clamp(c.zoom * Math.exp(-e.deltaY * 0.01), 0.5, 3) }))
     }
     el.addEventListener("wheel", onWheel, { passive: false })
     return () => el.removeEventListener("wheel", onWheel)
@@ -128,7 +128,7 @@ export function Field(props: Props) {
           }
           setCam(d.pan
             ? { ...d.cam, panX: d.cam.panX + dx, panY: d.cam.panY + dy }
-            : { ...d.cam, yaw: clamp(d.cam.yaw - dx * 0.15, -35, 35), tilt: clamp(d.cam.tilt + dy * 0.15, 0, 70) })
+            : { ...d.cam, yaw: d.cam.yaw - dx * 0.36, tilt: clamp(d.cam.tilt + dy * 0.2, 0, 80) })   // yaw: no limit, 360°
         },
         onPointerUp: () => {
           if (drag.current?.moved) {
@@ -138,7 +138,8 @@ export function Field(props: Props) {
           drag.current = null
           setDragging(false)
         },
-        onDoubleClick: () => setCam(DEFAULT_CAM),
+        // back to straight on - from the nearest full turn, so it doesn't unwind every lap it was spun
+        onDoubleClick: () => setCam((c) => ({ ...DEFAULT_CAM, yaw: Math.round(c.yaw / 360) * 360 })),
         onClickCapture: (e: React.MouseEvent) => {
           if (justDragged.current) {
             e.stopPropagation()
@@ -313,7 +314,7 @@ export function Field(props: Props) {
 
       {threeD && (
         <div className="pointer-events-none absolute right-3 bottom-3 rounded-md bg-black/50 px-2 py-1 text-[10px] text-zinc-400 backdrop-blur-sm">
-          Drag to orbit · Shift-drag to pan · Pinch or ⌘-scroll to zoom · Double-click to reset
+          Drag to spin 360° and tilt · Shift-drag to pan · Pinch or ⌘-scroll to zoom · Double-click to reset
         </div>
       )}
       {hovered && hover && canHover && !dragging && <PlayHoverCard play={hovered} kind={kind} x={hover.x} y={hover.y} />}
