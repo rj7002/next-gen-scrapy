@@ -223,6 +223,22 @@ PBP_TTL_CURRENT = 15 * 60     # nflverse adds each game's play-by-play a few hou
                               # season in progress this often
 
 
+PBP_RETRY_WAITS = (2, 5, 10, 20)   # seconds; GitHub now and then resets the connection mid-download (nflverse's
+                                   # files are release assets) - a retry nearly always goes through
+
+
+def _with_retries(fn):
+    """fn(), tried again after network errors (nflreadpy raises ConnectionError; requests' errors are OSErrors too).
+    Files that did come down stay in nflreadpy's cache, so a retry fetches only what failed."""
+    for wait in PBP_RETRY_WAITS:
+        try:
+            return fn()
+        except OSError as e:
+            print(f"play-by-play download failed ({e}); retrying in {wait}s", flush=True)
+            time.sleep(wait)
+    return fn()
+
+
 def pbp(season: int, need_games=(), min_age: float = 120) -> tuple[float, pd.DataFrame]:
     """(loaded-at, play-by-play) for a season, cached. The season in progress is reloaded once its copy is
     PBP_TTL_CURRENT old - or sooner (once it's min_age old) when a chart needs a game it doesn't have yet."""
@@ -241,7 +257,7 @@ def pbp(season: int, need_games=(), min_age: float = 120) -> tuple[float, pd.Dat
                 return hit
             import nflreadpy
             nflreadpy.clear_cache()           # its own in-memory cache would hand back the same stale copy
-        hit = (time.time(), load_pbp_with_ftn([season]))
+        hit = (time.time(), _with_retries(lambda: load_pbp_with_ftn([season])))
         with _lock:
             _pbp[season] = hit
             while len(_pbp) > PBP_KEEP:
@@ -480,6 +496,10 @@ def _undrawn_json(kind: str, und: pd.DataFrame) -> list[dict]:
                 d[c] = _clean(r[c])
         d["week"] = r["chart_week"]
         d["location_prob"] = None
+        ngs = r.get("target_route")
+        ngs = RT.UNIFY.get(ngs, ngs) if isinstance(ngs, str) else None
+        if ngs in RT.CLASSES:
+            d["tree_route"], d["tree_route_src"] = ngs, "ngs"
         out.append(d)
     return out
 
@@ -514,6 +534,16 @@ def _unmatched(kind, matched, chart_df, no_fit=()):
             if (g, i) in no_fit:
                 d["reason"] = "no_fit"
         rows.append(d)
+    if kind == "route" and rows:
+        # no play, but the line still has a shape: its route goes in the route tree
+        season = int(chart_df["season"].iloc[0]) if "season" in chart_df else 2023
+        P = RT.predict_proba(pd.DataFrame(dict(path_x=[np.asarray(d["path_x"]) for d in rows],
+                                               path_y=[np.asarray(d["path_y"]) for d in rows],
+                                               path_segment=[d["path_segment"] for d in rows],
+                                               route_type=[d["route_type"] for d in rows], season=season)))
+        for d, r in zip(rows, P):
+            if np.isfinite(r).all():
+                d["tree_route"], d["tree_route_src"] = RT.CLASSES[int(np.argmax(r))], "shape"
     return rows
 
 

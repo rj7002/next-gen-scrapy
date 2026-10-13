@@ -81,11 +81,13 @@ function JobBadge({ job }: { job: Job }) {
   return null
 }
 
-const STAGES = ["Reading charts", "Loading play-by-play", "Matching to play-by-play"]
+// in the order engine._run does them; "Loading season data" (stored charts) counts as reading charts
+const STAGES = ["Loading play-by-play", "Reading charts", "Matching to play-by-play"]
 
 export function LoadingCard({ job, name, kind }: { job: Job | null; name: string; kind: Kind }) {
-  const idx = job ? Math.max(0, STAGES.indexOf(job.stage)) : 0
-  const pct = !job ? 4 : job.stage === "Reading charts" && job.total ? 8 + (70 * job.done) / job.total : 78 + idx * 8
+  const stage = job?.stage === "Loading season data" ? "Reading charts" : job?.stage
+  const idx = job ? Math.max(0, STAGES.indexOf(stage ?? "")) : 0
+  const pct = !job ? 4 : idx === 0 ? 8 : stage === "Reading charts" && job.total ? 15 + (70 * job.done) / job.total : idx === 1 ? 15 : 90
   return (
     <Card className="mx-auto mt-6 w-full max-w-xl gap-5 border-border/60 bg-card/60 p-6">
       <div className="flex items-center gap-3">

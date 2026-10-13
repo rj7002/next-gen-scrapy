@@ -358,7 +358,7 @@ export default function App() {
                     <TabsTrigger value="games">Games</TabsTrigger>
                   </TabsList>
                   <TabsContent value="insights" className="mt-3">
-                    <Insights kind={sel.kind} plays={visible} />
+                    <Insights kind={sel.kind} plays={visible} fieldPlays={onField} />
                   </TabsContent>
                   <TabsContent value="plays" className="mt-3">
                     <PlayTable kind={sel.kind} plays={visible} selectedId={selectedId} onSelect={setSelectedId} />

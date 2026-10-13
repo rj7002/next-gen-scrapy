@@ -146,7 +146,9 @@ function Coverage({ plays }: { plays: Play[] }) {
   )
 }
 
-export function Insights({ kind, plays }: { kind: Kind; plays: Play[] }) {
+/** fieldPlays: what's drawn on the field (no undrawn throws unless they're shown) - the route tree and run gaps
+ * count exactly those */
+export function Insights({ kind, plays, fieldPlays }: { kind: Kind; plays: Play[]; fieldPlays: Play[] }) {
   const panels = [
     kind === "carry" && <Gains key="gains" plays={plays} />,
     kind !== "carry" && <Depth key="depth" kind={kind} plays={plays} />,
@@ -156,7 +158,7 @@ export function Insights({ kind, plays }: { kind: Kind; plays: Play[] }) {
   ].filter(Boolean)
   return (
     <div className="flex flex-col gap-3">
-    {kind === "carry" ? <RunGapsPanel plays={plays} /> : <RouteTreePanel kind={kind} plays={plays} />}
+    {kind === "carry" ? <RunGapsPanel plays={fieldPlays} /> : <RouteTreePanel kind={kind} plays={fieldPlays} />}
     <div className={cn("grid gap-3 md:grid-cols-2", panels.length % 3 === 0 && "xl:grid-cols-3", panels.length === 5 && "xl:grid-cols-6 xl:[&>*:nth-child(-n+3)]:col-span-2 xl:[&>*:nth-child(n+4)]:col-span-3")}>
       {panels}
     </div>

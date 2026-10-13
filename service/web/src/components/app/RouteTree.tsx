@@ -88,7 +88,7 @@ export function RouteTreePanel({ kind, plays }: { kind: Kind; plays: Play[] }) {
               </div>
               <Row k={noun[0].toUpperCase() + noun.slice(1)} v={`${f.targets} (${Math.round((100 * f.targets) / t.total)}%)`} />
               <Row k="Caught" v={`${f.catches} (${Math.round((100 * f.catches) / f.targets)}%)`} />
-              <Row k="Yards" v={`${f.yards} (${(f.yards / f.targets).toFixed(1)} / target)`} />
+              <Row k="Yards" v={`${f.yards} (${f.ypt.toFixed(1)} / target)`} />
               <Row k="EPA / target" v={sign(f.epa)} />
               {f.td > 0 && <Row k="Touchdowns" v={String(f.td)} />}
             </div>
@@ -105,8 +105,9 @@ export function RouteTreePanel({ kind, plays }: { kind: Kind; plays: Play[] }) {
             {t.ngs > 0 && `NGS's route label for ${t.ngs}`}
             {t.ngs > 0 && t.shape > 0 && "; "}
             {t.shape > 0 && `read from the ${kind === "pass" ? "receiver's route chart" : "line"} for ${t.shape}`}.
-            {t.missing > 0 && kind === "pass" && ` ${t.missing} throws aren't shown: no route label and no route chart for the target.`}
-            {t.missing > 0 && kind === "route" && ` ${t.missing} routes too short to read aren't shown.`}
+            {kind === "pass" && t.unmatched > 0 && ` Not in the tree: ${t.unmatched} ${t.unmatched === 1 ? "dot" : "dots"} not matched to a play (no play, so no route).`}
+            {kind === "pass" && t.unlabeled > 0 && ` ${t.unlabeled} ${t.unlabeled === 1 ? "throw has" : "throws have"} no route label and no route chart for the target.`}
+            {kind === "route" && t.unmatched + t.unlabeled > 0 && ` ${t.unmatched + t.unlabeled} ${t.unmatched + t.unlabeled === 1 ? "line is" : "lines are"} too short to read a route from.`}
           </p>
         </div>
       </CardContent>

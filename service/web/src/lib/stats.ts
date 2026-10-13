@@ -178,16 +178,20 @@ export function situation(p: Play): string {
   return `${d} & ${togo}`
 }
 
-export interface TreeRoute { route: string; targets: number; catches: number; yards: number; epa: number; td: number }
+export interface TreeRoute { route: string; targets: number; catches: number; yards: number; ypt: number; epa: number; td: number }
 
-/** route-tree numbers per route type: tree_route is NGS's label for the target's route where play-by-play has it,
- * else the route read from the chart line's shape (engine._route_tree) */
+/** route-tree numbers per route type, over the plays on the field: tree_route is NGS's label for the target's route
+ * where play-by-play has it, else the route read from the chart line's shape (engine._route_tree) - an unmatched
+ * route line still has one; an unmatched pass dot doesn't */
 export function routeTree(kind: Kind, plays: Play[]) {
   const g = new Map<string, Play[]>()
-  let ngs = 0, shape = 0, missing = 0
+  let ngs = 0, shape = 0, unmatched = 0, unlabeled = 0
   for (const p of plays) {
-    if (!p.matched) continue
-    if (!p.tree_route) { missing++; continue }
+    if (!p.tree_route) {
+      if (p.matched) unlabeled++
+      else unmatched++
+      continue
+    }
     if (p.tree_route_src === "ngs") ngs++
     else shape++
     g.set(p.tree_route, [...(g.get(p.tree_route) ?? []), p])
@@ -197,10 +201,11 @@ export function routeTree(kind: Kind, plays: Play[]) {
     targets: ps.length,
     catches: ps.filter((p) => isCatch(p, kind)).length,
     yards: sum(ps.map((p) => num(p.yards_gained))),
+    ypt: mean(ps.filter((p) => p.matched).map((p) => num(p.yards_gained))) ?? 0,   // play-by-play's, so matched only
     epa: mean(ps.map((p) => num(p.epa))) ?? 0,
     td: ps.filter((p) => isTd(p, kind)).length,
   }))
-  return { routes, total: ngs + shape, ngs, shape, missing }
+  return { routes, total: ngs + shape, ngs, shape, unmatched, unlabeled }
 }
 
 // play-by-play's run_location + run_gap, outside-left to outside-right; guard = A gap, tackle = B, end = C
@@ -229,5 +234,5 @@ export function runGaps(plays: Play[]) {
     }
   })
   const total = gaps.reduce((n, g) => n + g.carries, 0)
-  return { gaps, total, unknown: plays.filter((p) => p.matched).length - total }
+  return { gaps, total, unknown: plays.filter((p) => p.matched).length - total, unmatched: plays.filter((p) => !p.matched).length }
 }

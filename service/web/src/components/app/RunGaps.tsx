@@ -27,7 +27,7 @@ export function RunGapsPanel({ plays }: { plays: Play[] }) {
       <CardHeader className="px-4">
         <CardTitle className="text-sm font-medium">Run gaps</CardTitle>
         <CardDescription className="text-xs">
-          EPA per rush by the gap play-by-play records, {g.total} matched carries: arrow thickness is the share of carries
+          {g.total} carries, by the gap play-by-play records: arrow thickness is the share of carries, colour is EPA per rush
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3 px-2 sm:px-4">
@@ -97,7 +97,9 @@ export function RunGapsPanel({ plays }: { plays: Play[] }) {
             </div>
           ) : (
             <span className="text-muted-foreground">
-              Hover or tap a gap for its numbers.{g.unknown > 0 && ` ${g.unknown} carries without a recorded gap aren't shown.`}
+              Hover or tap a gap for its numbers.
+              {g.unmatched > 0 && ` Not shown: ${g.unmatched} ${g.unmatched === 1 ? "line" : "lines"} on the chart not matched to a play (the gap comes from play-by-play).`}
+              {g.unknown > 0 && ` ${g.unknown} matched ${g.unknown === 1 ? "carry has" : "carries have"} no gap in play-by-play.`}
             </span>
           )}
           <div className="flex items-center gap-2">
