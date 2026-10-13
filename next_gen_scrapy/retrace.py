@@ -20,12 +20,13 @@ import os
 import numpy as np
 import pandas as pd
 
-from .pbp_match import match_to_pbp, score_chart
+from .pbp_match import line_fit, match_to_pbp, score_chart
 from .routes import detect_routes, route_alternatives
 
 GEO_WEIGHT = 0.05            # nats per pixel of extra join cost: geometry breaks near-ties only
 UNSURE_BELOW = 0.6           # re-read charts with any catch below this location confidence
-DOT_DISAGREE_YD = 2.5        # ... or any catch this far from the QB's pass-chart dot for the same throw
+DOT_DISAGREE_YD = 2.5
+ROUTE_FIT_HINT = True        # re-reads score every candidate route against the receiver's targets (pbp_match.line_fit)        # ... or any catch this far from the QB's pass-chart dot for the same throw
 _BASE_COLS = ["game_id", "season", "season_type", "week", "team", "esb_id", "name", "position"]
 
 
@@ -95,12 +96,19 @@ def retrace_routes(route_df, pbp_df, chart_qc=None, root=".", geo_weight=GEO_WEI
         # the stroke-graph readers' readings too (they read every line at once and often untangle differently) - and,
         # with the QB's dots for this receiver's catches, readings that untangle the crossings where the ball went
         game_id, pid = keys.loc[(g, esb)]
+        plays = passes[(passes["game_id"] == game_id) & (passes["receiver_player_id"] == pid)]
+        old = route_df[(route_df["game_id"] == g) & (route_df["esb_id"] == esb)]
+        base = old.iloc[0][_BASE_COLS].to_dict()
         hinted = [expected]
         if link is not None and pass_matches is not None and "receiver_player_id" in pass_matches:
             mine = pass_matches[(pass_matches["game_id"] == game_id) & (pass_matches["receiver_player_id"] == pid)
                                 & pass_matches["pass_type"].isin(["COMPLETE", "TOUCHDOWN"])]
             if len(mine):
                 hinted.append(dict(expected, catches=mine[["x_coord", "y_coord"]].to_numpy(float).tolist()))
+        if ROUTE_FIT_HINT and len(plays):
+            # every candidate route scored against this receiver's real targets while the chart is read
+            fit = lambda routes, _p=plays, _b=base: line_fit(_rows(_b, routes), _p, "route", params, link)
+            hinted = hinted + [dict(h, fit=fit) for h in hinted]
         for exp in hinted:
             for method in ("graph", "layers"):
                 try:
@@ -109,9 +117,6 @@ def retrace_routes(route_df, pbp_df, chart_qc=None, root=".", geo_weight=GEO_WEI
                     pass
         if not alts:
             continue
-        plays = passes[(passes["game_id"] == game_id) & (passes["receiver_player_id"] == pid)]
-        old = route_df[(route_df["game_id"] == g) & (route_df["esb_id"] == esb)]
-        base = old.iloc[0][_BASE_COLS].to_dict()
         # the chart's current reading (detect_routes' graph reader, normally) is the baseline: an alternative
         # replaces it only if it explains this receiver's real targets better. The alternatives come from the
         # original tracer's ways of joining crossings (their geometry cost is relative to each other)

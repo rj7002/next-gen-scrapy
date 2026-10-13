@@ -57,6 +57,16 @@ CAND_MAX_COST = 220.0
 HIDDEN_END_MAX_COST = 60.0
 CAND_PER_PAIR = 2
 MIN_CARRY_PX = 12.0                          # a carry runs from the backfield to at least the LOS area: never a speck
+# expected["yards"] (the back's pbp runs, touchdowns aside): a carry whose end is far from every one of them costs
+# YARDS_HINT_COST per yd past YARDS_HINT_FREE, up to YARDS_HINT_CAP - where pieces of lines meet under the LOS bar
+# or a bundle, the pairing whose ends match real runs wins (a line that "ends" at the LOS when no run did is a
+# piece whose continuation went to another line)
+YARDS_HINT_OFFSET = 0.4                      # a line ends ~0.4 yd past pbp's spot
+YARDS_HINT_FREE, YARDS_HINT_COST, YARDS_HINT_CAP = 1.2, 6.0, 30.0
+# expected["fit"] (callable): how well each candidate fits the back's best-fitting pbp run on every clue the matcher
+# uses (yards, NGS distance, start spot, duration, ...), in nats - a candidate worse than the chart's typical one costs
+# FIT_COST per nat beyond, up to FIT_CAP
+FIT_COST, FIT_CAP = 10.0, 80.0
 
 
 def masks(hsv, lay):
@@ -335,6 +345,50 @@ def through_paths(G, lay, targets):
 
 
 # ----------------------------------------------------------------------------------------------- choose
+def _yards_hint(cands, G, yards):
+    """cands with each non-touchdown carry's cost raised by how far its end is from every pbp run's yards."""
+    y = np.asarray([v for v in yards if v is not None and np.isfinite(v)], float) + YARDS_HINT_OFFSET
+    if not len(y):
+        return cands
+    out = []
+    for color, nodes, edges, cost, kind in cands:
+        ey = G.ends_y.get(nodes[-1])
+        if kind != "ring" and ey is not None:
+            miss = float(np.min(np.abs(y - ey)))
+            cost = cost + min(YARDS_HINT_CAP, YARDS_HINT_COST * max(0.0, miss - YARDS_HINT_FREE))
+        out.append((color, nodes, edges, cost, kind))
+    return out
+
+
+def _fit_hint(cands, G, lay, fit):
+    """cands with each carry's cost raised by how badly its traced line fits the back's runs (expected["fit"])."""
+    if not cands:
+        return cands
+    lines = []
+    for color, nodes, edges, cost, kind in cands:
+        px = RG._path_pixels(G, nodes, edges)
+        pts = RG._R().resample_field(lay, px, ceiling=None)[0] if len(px) >= 2 else []
+        lines.append(dict(color=NAMES[color], td=kind == "ring", fumble=kind == "fumble", pts=pts,
+                          handoff_ok=bool(len(pts) and pts[0][1] <= 0.5), gap=False))
+    ok = [i for i, l in enumerate(lines) if len(l["pts"]) >= 2]
+    try:
+        nats = fit([lines[i] for i in ok])
+    except Exception:
+        return cands
+    vals = np.full(len(cands), np.nan)
+    for k, i in enumerate(ok):
+        vals[i] = nats.get(k + 1, np.nan)
+    if not np.isfinite(vals).any():
+        return cands
+    typical = float(np.nanmedian(vals))
+    out = []
+    for (color, nodes, edges, cost, kind), v in zip(cands, vals):
+        if np.isfinite(v):
+            cost = cost + min(FIT_CAP, FIT_COST * max(0.0, v - typical))
+        out.append((color, nodes, edges, cost, kind))
+    return out
+
+
 def choose(G, cands, n_carries, td, min_cover, by_color=None):
     """by_color (optional): {colour id: carries of that colour} - e.g. from play-by-play (red: lost yards, yellow:
     0-5, green: 6+ or a touchdown) - held softly: missing it costs COLOR_SLACK per carry."""
@@ -680,6 +734,10 @@ def read_carries(image, expected, mode="union", lay=None):
             cands = _jump_to_ring(G, _retreat(G, lay, candidate_paths(G, lay)))
     n_carries, td = expected.get("carries"), expected.get("touchdowns")
     by_color = {COLORS[k]: v for k, v in (expected.get("by_color") or {}).items()}
+    if expected.get("yards") is not None:
+        cands = _yards_hint(cands, G, expected["yards"])
+    if expected.get("fit") is not None:
+        cands = _fit_hint(cands, G, lay, expected["fit"])
     min_cover = 2.5 * G.width
     chosen, dbg = choose(G, cands, n_carries, td, min_cover, by_color)
     seen = {(p[0], tuple(p[2])) for p in cands}
@@ -688,6 +746,10 @@ def read_carries(image, expected, mode="union", lay=None):
         if not todo:
             break
         new = _jump_to_ring(G, _retreat(G, lay, [p for p in through_paths(G, lay, todo) if (p[0], tuple(p[2])) not in seen]))
+        if expected.get("yards") is not None:
+            new = _yards_hint(new, G, expected["yards"])
+        if expected.get("fit") is not None:
+            new = _fit_hint(new, G, lay, expected["fit"])
         if not new:
             break
         seen |= {(p[0], tuple(p[2])) for p in new}

@@ -848,6 +848,17 @@ outcome: ~97% (2018-22), ~90% (2023-25). `location_prob` is at least 0.7 for 98.
 
 ## What's new
 
+0.6.2: **Match-aware chart reading.**
+
+- **Carry and route readers take the player's plays**: where pieces of lines meet (under the line-of-scrimmage bar,
+  in a bundle, at a crossing), every candidate line is scored against the player's best-fitting play on everything
+  the matcher uses (`pbp_match.line_fit`) - yards, NGS distance, start spot, the next snap's hash, the QB's dot -
+  so the reading whose lines look like real plays wins. Carry lines read clearly wrong (3+ yds off every run) fall
+  from ~4% to ~2%; carries +1.3 pt and routes +0.4-0.7 pt within the tracked spot (2024-25).
+- Carry charts are re-read when their lines can't be paired with the back's yards, or have fewer sideline ends
+  than he had runs out of bounds; `load_pbp_with_ftn` adds each run's / completion's next-snap hash
+  (`add_snap_context`) for that scoring.
+
 0.6.1: **Outside data for matching: NGS ball-carrier distances.**
 
 - **Carries and routes**: how far the ball carrier went on each play, from NGS's public leader lists

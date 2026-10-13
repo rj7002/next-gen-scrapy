@@ -21,6 +21,7 @@ import os
 import sys
 from concurrent.futures import ProcessPoolExecutor
 
+import numpy as np
 import pandas as pd
 
 from . import calib as K
@@ -136,6 +137,48 @@ def carry_colours(plays):
             "LONG": int(((y > 5) | td).sum())}
 
 
+CARRY_FIT_HINT = True  # re-reads score every candidate line against the back's runs (pbp_match.line_fit)
+SIDELINE_YD = 24.0   # a line ending this far out reached the sideline (pbp_match._SIDELINE_YD)
+
+
+def carry_yards(plays):
+    """The back's pbp yards for runs that didn't score (a touchdown line ends on its ring): the graph reader's hints."""
+    td = plays["touchdown"].fillna(0).astype(float) == 1 if "touchdown" in plays else pd.Series(False, index=plays.index)
+    return plays.loc[~td, "yards_gained"].astype(float).tolist()
+
+
+def carry_oob_runs(plays):
+    """How many of these pbp runs went out of bounds with the runner himself ("ran ob", "pushed ob" - not a defender
+    after a fumble): each needs a line that ends at a sideline."""
+    oob = plays["out_of_bounds"].fillna(0).astype(float) == 1 if "out_of_bounds" in plays else pd.Series(False, index=plays.index)
+    if "desc" in plays:
+        oob &= ~plays["desc"].fillna("").str.contains("FUMBLES|ateral", regex=True)
+    return int(oob.sum())
+
+
+YARDS_MISS_YD = 3.0   # a reading whose lines can't be paired with the runs' yards within this is suspect
+
+
+def _yards_dont_fit(carries, plays):
+    """True when no pairing of the reading's lines with the back's runs gets every non-touchdown line within
+    YARDS_MISS_YD of its run's yards - a line traced short (or long) of where the run ended."""
+    from scipy.optimize import linear_sum_assignment
+    y = plays["yards_gained"].astype(float).to_numpy()
+    td = (plays["touchdown"].fillna(0).astype(float) == 1).to_numpy() if "touchdown" in plays else np.zeros(len(y), bool)
+    ends = np.array([float(c["pts"][-1][1]) if len(c["pts"]) else np.nan for c in carries])
+    ctd = np.array([bool(c["td"]) for c in carries])
+    yy, ee = y[~td], ends[~ctd]
+    if not len(yy) or len(yy) != len(ee) or not np.isfinite(yy).all() or not np.isfinite(ee).all():
+        return False
+    cost = np.abs(ee[:, None] - 0.4 - yy[None, :])
+    r, c = linear_sum_assignment(cost)
+    return bool((cost[r, c] >= YARDS_MISS_YD).any())
+
+
+def _sideline_lines(carries):
+    return sum(abs(float(c["pts"][-1][0])) >= SIDELINE_YD for c in carries if len(c["pts"]))
+
+
 def _carry_rows(base, carries):
     rows = []
     for i, c in enumerate(carries, 1):
@@ -149,7 +192,9 @@ def _carry_rows(base, carries):
 def process_carry(image_path, meta, plays=None, recheck="mismatch"):
     """
     plays (optional): this back's pbp runs in the game. When the reading's colours don't add up to them (a yellow
-    run read as part of a green one at a crossing, ...), the chart is read again with pbp's colour counts held, by
+    run read as part of a green one at a crossing, ...), or it has fewer lines ending at a sideline than the back
+    has runs that went out of bounds (a line traced short of the sideline), or its line ends can't be paired with the
+    runs' yards within YARDS_MISS_YD (a line traced short of where the run ended), the chart is read again with pbp's colour counts held, by
     every reader, and the reading that best fits the plays (pbp_match.score_chart) is kept. recheck="always" tries
     the other readings even when the colours add up.
     """
@@ -162,13 +207,17 @@ def process_carry(image_path, meta, plays=None, recheck="mismatch"):
     if plays is not None and len(plays) == st["carries"]:
         want = carry_colours(plays)
         have = {k: sum(c["color"] == k for c in carries) for k in want}
-        if have != want or recheck == "always":
+        short_of_sideline = _sideline_lines(carries) < carry_oob_runs(plays)
+        if have != want or short_of_sideline or _yards_dont_fit(carries, plays) or recheck == "always":
             from . import pbp_match as PM
             params = PM._league_params("carry", pd.DataFrame([base])) or PM._calibrate("carry", [])
             scored = [(PM.score_chart(pd.DataFrame(rows), plays, "carry", params), rows, carries, info)]
             for method in ("layers", "graph", "tracer"):
                 try:
-                    alt, alt_info = ngs_carries.detect_carries(im0, dict(expected, by_color=want), method=method)
+                    hints = dict(by_color=want, yards=carry_yards(plays))
+                    if CARRY_FIT_HINT:
+                        hints["fit"] = lambda lines: PM.line_fit(pd.DataFrame(_carry_rows(base, lines)), plays, "carry", params)
+                    alt, alt_info = ngs_carries.detect_carries(im0, dict(expected, **hints), method=method)
                 except Exception:
                     continue
                 if len(alt) != st["carries"]:

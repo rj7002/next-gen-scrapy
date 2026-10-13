@@ -186,6 +186,10 @@ def load_pbp_with_ftn(seasons, participation=True, gamecenter=True, gamecenter_c
             warnings.warn(f"no NGS Game Center data ({e}); matching works without it, less precisely")
             for c in GAMECENTER_COLS:
                 pbp[c] = np.nan
+    try:                                            # next snap's hash per run / completion (for chart readers)
+        pbp = add_snap_context(pbp)
+    except Exception as e:
+        warnings.warn(f"no next-snap context ({e})")
     if ngs_distance:
         from .ngs_distance import add_ngs_distance
         try:
@@ -520,6 +524,8 @@ def _pbp_features(pbp, kind):
             f["ngs_dist"] = pbp["ngs_carrier_dist"].astype(float) if "ngs_carrier_dist" in pbp else np.nan
             f["screen"] = pbp["is_screen_pass"].astype(float) if "is_screen_pass" in pbp else np.nan
             f["yac"] = pbp["yards_after_catch"].astype(float)
+            if "next_hash_route" in pbp:              # add_snap_context
+                f["next_hash"] = pbp["next_hash_route"]
             f["oob"] = pbp["out_of_bounds"].astype(float) if "out_of_bounds" in pbp else np.nan
             ttt = pbp["time_to_throw"].astype(float) if "time_to_throw" in pbp else pd.Series(np.nan, index=pbp.index)
             a, b, c = _TTT_COEF
@@ -541,6 +547,8 @@ def _pbp_features(pbp, kind):
         f["qbloc"] = pbp["qb_location"] if "qb_location" in pbp else None
         f["rundir"] = pbp["run_location"]
         f["ngs_dist"] = pbp["ngs_carrier_dist"].astype(float) if "ngs_carrier_dist" in pbp else np.nan
+        if "next_hash_carry" in pbp:                  # add_snap_context: lets a chart reader score with it too
+            f["next_hash"] = pbp["next_hash_carry"]
         f["ngs_below"] = pbp["ngs_dist_below"].astype(float) if "ngs_dist_below" in pbp else np.nan
         f["oob"] = pbp["out_of_bounds"].astype(float) if "out_of_bounds" in pbp else np.nan
         f["fumble"] = pbp["fumble_lost"].astype(float) if "fumble_lost" in pbp else np.nan
@@ -1748,6 +1756,36 @@ def _set_zone_yards(pf_all, cf_all, chart, assigned):
 
 
 _UNMATCHED_NATS = 12.0   # a chart line with no play left to pair with (a reading with the wrong split)
+
+
+def add_snap_context(pbp_df):
+    """pbp with the next snap's FTN hash per run (`next_hash_carry`) and per completion (`next_hash_route`), so
+    code that sees only one player's plays (a chart reader choosing between readings) can use it like match_to_pbp."""
+    out = pbp_df.copy()
+    games = set(out["game_id"].dropna())
+    for kind, col in (("carry", "next_hash_carry"), ("route", "next_hash_route")):
+        nh = _next_snap_hash(out, games, kind)
+        out[col] = [nh.get((g, q)) for g, q in zip(out["game_id"], out["play_id"])]
+    return out
+
+
+def line_fit(chart_rows, pbp_rows, kind, params, link=None):
+    """{line id: cost (nats) of that chart line under the play it fits best} - every line scored on its own, no
+    one-to-one assignment. For a reader choosing between ways to trace a tangled chart: a piece that fits none of
+    the player's plays is a piece traced wrong."""
+    red = to_paths(chart_rows, kind)
+    idc = {"route": "route_id", "carry": "carry_id"}[kind]
+    cfeat, pfeat = _chart_features(red, kind), _pbp_features(pbp_rows, kind)
+    if link is not None and len(link):
+        k = pbp_rows[["game_id", "play_id"]].reset_index().merge(link, on=["game_id", "play_id"], how="left").set_index("index")
+        pfeat["link_x"], pfeat["link_y"] = k["link_x"], k["link_y"]
+    out = {}
+    for bucket, (p_sub, c_sub) in _buckets(kind, pbp_rows, red).items():
+        if len(c_sub) and len(p_sub):
+            C = _cost_matrix(kind, cfeat.loc[c_sub.index], pfeat.loc[p_sub.index], params, bucket)
+            for i, v in zip(red.loc[c_sub.index, idc], C.min(axis=1)):
+                out[int(i)] = float(v)
+    return out
 
 
 def score_chart(chart_rows, pbp_rows, kind, params, link=None):

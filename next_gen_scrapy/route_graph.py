@@ -967,6 +967,52 @@ def _hint_cost(G, n):
     return hc
 
 
+# expected["fit"] (callable): each candidate route's cost (nats) under the receiver's best-fitting target - QB dot, NGS
+# distance, route type, depth, ... (pbp_match.line_fit): a candidate worse than the chart's typical one costs FIT_COST
+# per nat beyond, up to FIT_CAP
+FIT_COST, FIT_CAP = 10.0, 80.0
+
+
+def _cand_route(G, lay, cand, ceiling=None):
+    """A candidate path as a route dict (field points, catch segment) - None if too short to resample."""
+    rtype, nodes, edges, cost, catch_i, on_ring = cand
+    px = _path_pixels(G, nodes, edges)
+    if len(px) < 2:
+        return None
+    pts, truncated = _R().resample_field(lay, px, ceiling=ceiling)
+    if len(pts) < 2:
+        return None
+    seg = np.array(["route"] * len(pts), dtype=object)
+    catch_px = None
+    if rtype == "COMPLETE" and catch_i is not None:
+        n_route_px = len(_path_pixels(G, nodes[:catch_i + 1], edges[:catch_i])) if catch_i > 0 else 1
+        catch_px = px[min(max(n_route_px - 1, 0), len(px) - 1)]
+        split = lay.img_to_field(catch_px[None])[0]
+        seg[int(np.argmin(np.linalg.norm(pts - split, axis=1))):] = "after_catch"
+    return dict(route_type=rtype, td=bool(on_ring), pts=pts, seg=seg, start_ok=bool(pts[0][1] <= _R().MAX_START_Y),
+                catch_px=catch_px, px=px, truncated=bool(truncated), gap=any(G.edges[e].get("jump") for e in edges))
+
+
+def _fit_hint(cands, G, lay, fit, ceiling=None):
+    """cands with each route's cost raised by how badly it fits the receiver's targets (expected["fit"])."""
+    if not cands:
+        return cands
+    routes = [_cand_route(G, lay, c, ceiling) for c in cands]
+    ok = [i for i, r in enumerate(routes) if r is not None]
+    try:
+        nats = fit([routes[i] for i in ok])
+    except Exception:
+        return cands
+    vals = np.full(len(cands), np.nan)
+    for k, i in enumerate(ok):
+        vals[i] = nats.get(k + 1, np.nan)
+    if not np.isfinite(vals).any():
+        return cands
+    typical = float(np.nanmedian(vals))
+    return [c[:3] + (c[3] + (min(FIT_CAP, FIT_COST * max(0.0, v - typical)) if np.isfinite(v) else 0.0),) + c[4:]
+            for c, v in zip(cands, vals)]
+
+
 def read_routes(image, expected, mode="union", lay=None, pix=None):
     """
     expected: receptions, touchdowns, targets (None = unknown), max_yards, and optionally catches: field (x, y) of
@@ -1000,6 +1046,9 @@ def read_routes(image, expected, mode="union", lay=None, pix=None):
         orphans = [n for n, N in enumerate(G.nodes) if N["kind"] == "ring" and n not in reached]
         if orphans and _add_jumps(G, lay, orphans):
             cands = _jump_to_ring(G, candidate_paths(G, lay))
+    fit, ceil_ = expected.get("fit"), expected.get("max_yards")
+    if fit is not None:
+        cands = _fit_hint(cands, G, lay, fit, ceil_)
     rec, td, tg = expected.get("receptions"), expected.get("touchdowns"), expected.get("targets")
     inc = (tg - rec) if (tg is not None and rec is not None) else None
     min_cover = 2.5 * G.width
@@ -1010,29 +1059,14 @@ def read_routes(image, expected, mode="union", lay=None, pix=None):
         if not todo:
             break
         new = _jump_to_ring(G, [p for p in through_paths(G, todo) if (p[0], tuple(p[2])) not in seen])
+        if fit is not None:
+            new = _fit_hint(new, G, lay, fit, ceil_)
         if not new:
             break
         seen |= {(p[0], tuple(p[2])) for p in new}
         cands += new
         chosen, dbg = choose(G, cands, rec, inc, td, min_cover)
-    out = []
-    for rtype, nodes, edges, cost, catch_i, on_ring in chosen:
-        px = _path_pixels(G, nodes, edges)
-        if len(px) < 2:
-            continue
-        pts, truncated = _R().resample_field(lay, px, ceiling=expected.get("max_yards"))
-        if len(pts) < 2:
-            continue
-        seg = np.array(["route"] * len(pts), dtype=object)
-        catch_px = None
-        if rtype == "COMPLETE" and catch_i is not None:
-            n_route_px = len(_path_pixels(G, nodes[:catch_i + 1], edges[:catch_i])) if catch_i > 0 else 1
-            catch_px = px[min(max(n_route_px - 1, 0), len(px) - 1)]
-            split = lay.img_to_field(catch_px[None])[0]
-            seg[int(np.argmin(np.linalg.norm(pts - split, axis=1))):] = "after_catch"
-        out.append(dict(route_type=rtype, td=bool(on_ring), pts=pts, seg=seg,
-                        start_ok=bool(pts[0][1] <= _R().MAX_START_Y), catch_px=catch_px, px=px,
-                        truncated=bool(truncated), gap=any(G.edges[e].get("jump") for e in edges)))
+    out = [r for r in (_cand_route(G, lay, c, expected.get("max_yards")) for c in chosen) if r is not None]
     out.sort(key=lambda r: (r["pts"][0][1], r["pts"][0][0]))
     return out, dict(graph=G, cands=len(cands), cand_list=cands, rings=[(r[0], r[1]) for r in rings],
                      lay=lay, dbg=dbg, mode=mode)
