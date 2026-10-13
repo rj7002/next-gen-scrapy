@@ -58,6 +58,12 @@ app = FastAPI(
     docs_url=None, redoc_url=None, openapi_url=None,     # don't publish a map of the API
 )
 
+
+@app.on_event("startup")
+def _warm():
+    if os.environ.get("NGS_WARM", "1") == "1":
+        engine.warm()                                     # the season in progress, loaded before the first visitor
+
 # --------------------------------------------------------------------------------------------- API guard
 # With NGS_API_GUARD=1 (the deployed app), /api answers only the app's own page running in a browser: requests must
 # come from the same site (browsers send Sec-Fetch-Site; scripts and other sites don't, or send something else) and

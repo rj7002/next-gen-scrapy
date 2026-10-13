@@ -240,30 +240,101 @@ def _with_retries(fn):
     return fn()
 
 
+_refreshing: set[int] = set()
+
+
 def pbp(season: int, need_games=(), min_age: float = 120) -> tuple[float, pd.DataFrame]:
-    """(loaded-at, play-by-play) for a season, cached. The season in progress is reloaded once its copy is
-    PBP_TTL_CURRENT old - or sooner (once it's min_age old) when a chart needs a game it doesn't have yet."""
+    """(loaded-at, play-by-play) for a season, cached - the light version (pbp + FTN + participation + next-snap
+    context): enough to show stored matches and every filter. Matching charts live needs more (`for_matching`).
+    The season in progress is refreshed in the background once its copy is PBP_TTL_CURRENT old - callers get the
+    cached copy meanwhile - and reloaded before returning only when a chart needs a game it doesn't have yet (once
+    the copy is min_age old)."""
+    with _lock:
+        hit = _pbp.get(season)
+        if hit:
+            _pbp.move_to_end(season)
+    if hit:
+        age = time.time() - hit[0]
+        have = set(hit[1]["old_game_id"].astype(str))
+        missing = any(str(g) not in have for g in need_games)
+        if season < current_season() or not (missing and age > min_age):
+            if season >= current_season() and age >= PBP_TTL_CURRENT:
+                _refresh_in_background(season)
+            return hit
+    return _load_pbp(season)
+
+
+def _load_pbp(season: int):
     with _lock:
         lk = _pbp_locks.setdefault(season, threading.Lock())
+        old = _pbp.get(season)
     with lk:
         with _lock:
             hit = _pbp.get(season)
-        if hit:
-            age = time.time() - hit[0]
-            have = set(hit[1]["old_game_id"].astype(str))
-            missing = any(str(g) not in have for g in need_games)
-            if season < current_season() or (age < PBP_TTL_CURRENT and not (missing and age > min_age)):
-                with _lock:
-                    _pbp.move_to_end(season)
-                return hit
+        if hit is not None and hit is not old:          # someone else loaded it while we waited
+            return hit
+        if old is not None:
             import nflreadpy
-            nflreadpy.clear_cache()           # its own in-memory cache would hand back the same stale copy
-        hit = (time.time(), _with_retries(lambda: load_pbp_with_ftn([season], ngs_distance_cache=NGS_DIST_CACHE)))
+            nflreadpy.clear_cache()                       # its own in-memory cache would hand back the same stale copy
+        hit = (time.time(), _with_retries(lambda: load_pbp_with_ftn([season], gamecenter=False, ngs_distance=False)))
         with _lock:
             _pbp[season] = hit
             while len(_pbp) > PBP_KEEP:
                 _pbp.popitem(last=False)
         return hit
+
+
+def _refresh_in_background(season: int):
+    with _lock:
+        if season in _refreshing:
+            return
+        _refreshing.add(season)
+
+    def run():
+        try:
+            _load_pbp(season)
+        except Exception:
+            traceback.print_exc()
+        finally:
+            with _lock:
+                _refreshing.discard(season)
+    threading.Thread(target=run, daemon=True).start()
+
+
+GC_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache", "gamecenter")
+
+
+def for_matching(p: pd.DataFrame, games) -> pd.DataFrame:
+    """The pbp rows of these games with what matching needs on top of the light copy: NGS Game Center (one request a
+    game) and NGS ball-carrier distances (their team-weeks only) - a handful of requests, not a season's ~1,700."""
+    from next_gen_scrapy.pbp_match import add_gamecenter
+    from next_gen_scrapy.ngs_distance import add_ngs_distance
+    sub = p[p["old_game_id"].astype(str).isin({str(g) for g in games})]
+    if not len(sub):
+        return sub
+    try:
+        sub = add_gamecenter(sub, cache_dir=GC_CACHE)
+    except Exception:
+        traceback.print_exc()
+    try:
+        sub = add_ngs_distance(sub, cache_dir=NGS_DIST_CACHE)
+    except Exception:
+        traceback.print_exc()
+    return sub
+
+
+def warm():
+    """Load the season in progress (play-by-play and its stored season data) in the background at startup, so the
+    first visitor doesn't wait for the downloads."""
+    def run():
+        try:
+            season = current_season()
+            pbp(season)
+            for kind in KINDS:
+                season_store(kind, season)
+        except Exception:
+            traceback.print_exc()
+    threading.Thread(target=run, daemon=True).start()
 
 
 # --------------------------------------------------------------------------------------------- reading
@@ -666,6 +737,7 @@ def _run(job: Job, charts: list[dict]):
             _publish(job, charts, pd.DataFrame(), pd.DataFrame(), notes)
             job.status, job.stage = "done", "Done"
             return
+        p = for_matching(p, {c["gameId"] for c in live})   # live charts only: matching's extra data for their games
         plays_for = _carry_plays(p, job.esb_id) if job.kind == "carry" else None   # carries are read with plays in hand
         job.stage, job.total, job.done = "Reading charts", len(live), 0
         images = {} if job.kind == "route" else None
@@ -837,6 +909,14 @@ def play_detail(job: Job, play_id: str) -> dict | None:
                               "is_qb_out_of_pocket", "is_trick_play"])
     out["charting"] = _pick(r, ["read_thrown", "is_catchable_ball", "is_contested_ball", "is_drop",
                                 "is_created_reception", "is_interception_worthy", "is_throw_away"])
+    if job.kind == "pass" and pd.isna(r.get("ngs_receiver_targets", np.nan)):
+        try:                                  # stored plays come with the light pbp: this game's Game Center, once
+            from next_gen_scrapy.pbp_match import add_gamecenter
+            g = add_gamecenter(pd.DataFrame([r]), cache_dir=GC_CACHE).iloc[0]
+            r = r.copy()
+            r["ngs_receiver_targets"], r["ngs_receiver_avg_air_yards"] = g.get("ngs_receiver_targets"), g.get("ngs_receiver_avg_air_yards")
+        except Exception:
+            pass
     out["gamecenter"] = _pick(r, ["ngs_receiver_targets", "ngs_receiver_avg_air_yards"])
     out["match"] = _pick(r, ["location_prob", "match_prob", "n_candidates", "swap_yds", "bucket"])
     # the people, with headshots
