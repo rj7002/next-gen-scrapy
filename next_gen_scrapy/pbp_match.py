@@ -26,6 +26,7 @@ import pandas as pd
 from .reshape import to_paths
 from . import route_type as _RT
 from . import carry_type as _CT
+from . import carry_pair as _CP
 
 try:
     from scipy.optimize import linear_sum_assignment
@@ -335,6 +336,8 @@ _TTT_COEF = (3.19, 3.73, 0.69)   # route yards before the catch ~ a + b * time_t
 _SIDELINE_YD = 24.0
 _P_END_AT_SIDELINE = {"carry": {1: 0.98, 0: 0.10}, "route": {1: 0.89, 0: 0.17}}
 _P_FUMBLE_AGREE = 0.97
+_USE_PAIR = True         # carries: the learned (line, run) scorer, carry_pair.py
+_PAIR_W = 1.0
 # carry chart colour (red / yellow / green) vs pbp yards_gained: LOSS < 0, SHORT 0-5, LONG 6+ -
 # agrees 97% of the time on confidently matched carries
 _P_GAIN_CLASS_AGREE = 0.97
@@ -365,10 +368,15 @@ _LOC_CALIBRATION = {
 # divided by that), isotonic. With FTN's hashes (2022+) / without (the same runs with the hashes and play times taken
 # away, standing in for 2018-21).
 _CARRY_LOC_CALIBRATION = {
-    True: ((0.0, 0.0), (0.1, 0.08), (0.2, 0.13), (0.3, 0.38), (0.4, 0.59), (0.5, 0.66), (0.6, 0.81), (0.7, 0.88),
-           (0.8, 0.94), (0.9, 0.99), (0.95, 1.0), (1.0, 1.0)),
-    False: ((0.0, 0.0), (0.1, 0.1), (0.2, 0.33), (0.3, 0.58), (0.4, 0.69), (0.5, 0.81), (0.6, 0.88), (0.7, 0.96),
-            (0.8, 0.99), (0.9, 0.99), (0.95, 1.0), (1.0, 1.0)),
+    # refit with the learned pair term (carry_pair.py): a 2-parameter logistic of raw location_prob vs the share of
+    # matched line ends within 3 yds of the tracked end / 0.90, Big Data Bowl 2023-25, checked season-out; the lowest
+    # band follows the data (few runs, right ~10-20%). True: games with FTN's hash, False: without
+    True: ((0.0, 0.0), (0.05, 0.1), (0.1, 0.2), (0.2, 0.35), (0.3, 0.567), (0.4, 0.603), (0.5, 0.636), (0.6, 0.669),
+           (0.7, 0.703), (0.8, 0.743), (0.85, 0.768), (0.9, 0.8), (0.95, 0.847), (0.98, 0.899), (0.99, 0.933),
+           (0.995, 0.961), (1.0, 1.0)),
+    False: ((0.0, 0.0), (0.05, 0.1), (0.1, 0.2), (0.2, 0.35), (0.3, 0.498), (0.4, 0.547), (0.5, 0.592), (0.6, 0.637),
+            (0.7, 0.684), (0.8, 0.74), (0.85, 0.774), (0.9, 0.816), (0.95, 0.876), (0.98, 0.939), (0.99, 0.976),
+            (0.995, 1.0), (1.0, 1.0)),
 }
 # route location_prob where pbp has no NGS air yards (2023+) -> how often a completion's catch point is really within
 # 2 yds of where the tracked receiver caught it (Big Data Bowl 2024-25, divided by the 93% that near-certain matches
@@ -547,6 +555,11 @@ def _pbp_features(pbp, kind):
         f["qbloc"] = pbp["qb_location"] if "qb_location" in pbp else None
         f["rundir"] = pbp["run_location"]
         f["ngs_dist"] = pbp["ngs_carrier_dist"].astype(float) if "ngs_carrier_dist" in pbp else np.nan
+        pair = _CP._load() if _USE_PAIR else None
+        if pair is not None:                          # the pbp columns the learned pair scorer reads
+            for c in pair["pbp_cols"]:
+                if c in pbp:
+                    f["pm_" + c] = pbp[c].to_numpy()
         if "next_hash_carry" in pbp:                  # add_snap_context: lets a chart reader score with it too
             f["next_hash"] = pbp["next_hash_carry"]
         f["ngs_below"] = pbp["ngs_dist_below"].astype(float) if "ngs_dist_below" in pbp else np.nan
@@ -836,6 +849,11 @@ def _cost_matrix(kind, cf, pf, params, bucket, split_link=False):
         if "tk_next_ball" in pf:              # tracking's spot for the next snap says it more precisely
             nh = np.where(np.isfinite(pf["tk_next_ball"].to_numpy(float)), None, nh)
         G = G + _NEXT_W * _next_hash_cost(cf["loc_x"].to_numpy(float), nh)
+    if kind == "carry" and _USE_PAIR:
+        # the learned (line, run) scorer (carry_pair.py): every chart feature and pbp column at once
+        pm = [c for c in pf.columns if c.startswith("pm_")]
+        if pm:
+            G = G + _PAIR_W * _CP.pair_cost(cf, pf[pm].rename(columns=lambda c: c[3:]))
     if kind == "carry" and _USE_NGS_DIST and not _NGS_DIST_IN_C and "ngs_dist" in pf and "path_len" in cf:
         nd = _ngs_dist_cost(cf["path_len"].to_numpy(float), pf["ngs_dist"].to_numpy(float), pf["ngs_below"].to_numpy(float),
                             pf["gain"].to_numpy(float))

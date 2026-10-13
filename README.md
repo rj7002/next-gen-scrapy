@@ -848,6 +848,13 @@ outcome: ~97% (2018-22), ~90% (2023-25). `location_prob` is at least 0.7 for 98.
 
 ## What's new
 
+0.6.3: **A learned scorer for carries.** `carry_pair.py` scores every (chart line, candidate run) pair with a
+gradient-boosted model over every chart feature and every usable play-by-play / FTN / participation column (127
+features), trained on confidently matched 2019-22 carries and shipped as plain arrays (`carry_pair_model.npz`, numpy
+only). On held-out 2024-25 runs: matched line ends within 3 yds of the tracked end 80.4% -> 81.6% (~91% right
+location), +1.5 pt without participation (2026 now), +1.0 pt without FTN. Carry `location_prob` is recalibrated for
+it (2023-25 tracking, checked season-out: matches shown 95%+ are right ~100%).
+
 0.6.2: **Match-aware chart reading.**
 
 - **Carry and route readers take the player's plays**: where pieces of lines meet (under the line-of-scrimmage bar,
