@@ -3,7 +3,7 @@ import { createPortal } from "react-dom"
 import { type Kind, type Play, unmatchedText } from "@/lib/api"
 import type { HeatImage } from "@/lib/exportChart"
 import { type ColorBy, heat, playColor, ROUTE_LINE } from "@/lib/colors"
-import { situation } from "@/lib/stats"
+import { kpis, situation } from "@/lib/stats"
 import { cn } from "@/lib/utils"
 import { PlayFacts, playWhen } from "./PlayDetail"
 
@@ -193,6 +193,37 @@ export function Field(props: Props) {
   const fit = Math.min(svgW / W, svgH / (ymax - ymin)) || 0
   const box = { w: W * fit, h: (ymax - ymin) * fit, x: (svgW - W * fit) / 2, y: (svgH - (ymax - ymin) * fit) / 2 }
   const peak = 0.12 * box.w
+
+  // heatmap hover: the plays around the spot under the cursor, summed up. The cursor is mapped back onto the field
+  // through wherever the field's corners are on screen (a homography), so it holds at any 3D spin, tilt and zoom.
+  const corners = useRef<(HTMLDivElement | null)[]>([])
+  const [spot, setSpot] = useState<{ x: number; y: number; cx: number; cy: number } | null>(null)
+  const radius = heatOf === "path" && kind !== "pass" ? 2.5 : 4
+  const fieldPoint = (cx: number, cy: number): [number, number] | null => {
+    const pts = corners.current.map((el) => el?.getBoundingClientRect())
+    if (pts.some((r) => !r)) return null
+    const toUnit = homography(pts.map((r) => [r!.left, r!.top] as [number, number]), [[0, 0], [1, 0], [1, 1], [0, 1]])
+    if (!toUnit) return null
+    const [u, v] = toUnit(cx, cy)
+    if (!(u >= 0 && u <= 1 && v >= 0 && v <= 1)) return null
+    return [XL + u * W, ymax - v * (ymax - ymin)]
+  }
+  const region = useMemo(() => {
+    if (!spot || view !== "heat") return null
+    const near = (x: number, y: number) => (x - spot.x) ** 2 + (y - spot.y) ** 2 <= radius * radius
+    return plays.filter((p) => {
+      if (heatOf === "path" && kind !== "pass") {
+        const xs: number[] = p.path_x ?? []
+        const yv: number[] = p.path_y ?? []
+        return xs.some((x, i) => near(x, yv[i]))
+      }
+      const l = landing(p, kind)
+      return l != null && near(l[0], l[1])
+    })
+  }, [spot, view, plays, heatOf, kind, radius])
+  useEffect(() => {
+    if (view !== "heat") setSpot(null)
+  }, [view])
   useImperativeHandle(props.ref, () => ({
     svg: () => svgRef.current,
     heat: () => heatImg ?? heatmap(plays, kind, heatOf, ymin, ymax),
@@ -243,8 +274,16 @@ export function Field(props: Props) {
       {...camHandlers}
       // functional update: this mousemove fires after the new play's mouseenter in the same event, and a stale
       // `hover` here would put the previous play back
-      onMouseMove={(e) => !dragging && setHover((h) => (h ? { ...h, x: e.clientX, y: e.clientY } : h))}
-      onMouseLeave={() => setHover(null)}
+      onMouseMove={(e) => {
+        if (dragging) return
+        if (view === "heat") {
+          const f = canHover ? fieldPoint(e.clientX, e.clientY) : null
+          setSpot(f ? { x: f[0], y: f[1], cx: e.clientX, cy: e.clientY } : null)
+          return
+        }
+        setHover((h) => (h ? { ...h, x: e.clientX, y: e.clientY } : h))
+      }}
+      onMouseLeave={() => (setHover(null), setSpot(null))}
     >
       {/* outer: pan, then tilt about the bottom edge (keeps the default framing); inner: turn and zoom about the
           middle of the field, in its own plane, so it spins in place */}
@@ -306,7 +345,13 @@ export function Field(props: Props) {
               preserveAspectRatio="none" style={{ mixBlendMode: "screen" }} />
           )}
 
-          <g key={animateKey} data-layer="plays" opacity={view === "heat" ? 0.18 : 1}>
+          {spot && region && !dragging && (
+            <circle data-layer="spot" cx={spot.x} cy={Y(spot.y)} r={radius} fill="white" fillOpacity={0.07} stroke="white"
+              strokeOpacity={0.85} strokeWidth={1.5} strokeDasharray="4 3" vectorEffect="non-scaling-stroke" pointerEvents="none" />
+          )}
+
+          <g key={animateKey} data-layer="plays" opacity={view === "heat" ? 0.18 : 1}
+            style={view === "heat" ? { pointerEvents: "none" } : undefined}>
             {ordered.map((p, i) => (
               <PlayMark key={p.id} play={p} kind={kind} colorBy={colorBy} top={ymax} index={i}
                 dim={focus != null && p.id !== focus} focused={p.id === focus} many={many}
@@ -318,6 +363,10 @@ export function Field(props: Props) {
             ))}
           </g>
         </svg>
+        {[[0, 0], [1, 0], [1, 1], [0, 1]].map(([u, v], i) => (
+          <div key={i} ref={(el) => { corners.current[i] = el }} aria-hidden className="pointer-events-none absolute size-0"
+            style={{ left: box.x + u * box.w, top: box.y + v * box.h }} />
+        ))}
         {heatStack && box.w > 0 && (
           <div className="pointer-events-none absolute" aria-hidden
             style={{ left: box.x, top: box.y, width: box.w, height: box.h, transformStyle: "preserve-3d" }}>
@@ -335,7 +384,11 @@ export function Field(props: Props) {
           Drag to spin 360° and tilt · Shift-drag to pan · Pinch or ⌘-scroll to zoom · Double-click to reset
         </div>
       )}
-      {hovered && hover && canHover && !dragging && <PlayHoverCard play={hovered} kind={kind} x={hover.x} y={hover.y} />}
+      {hovered && hover && canHover && !dragging && view !== "heat" && <PlayHoverCard play={hovered} kind={kind} x={hover.x} y={hover.y} />}
+      {spot && region && !dragging && (
+        <RegionCard kind={kind} plays={region} total={plays.length} radius={radius} paths={heatOf === "path" && kind !== "pass"}
+          x={spot.cx} y={spot.cy} />
+      )}
     </div>
   )
 }
@@ -477,6 +530,79 @@ function PlayHoverCard({ play, kind, x, y }: { play: Play; kind: Kind; x: number
     </div>,
     document.body,
   )
+}
+
+/** The heatmap's hover card: the same numbers as the cards above the field, for the plays around the cursor. */
+function RegionCard({ kind, plays, total, radius, paths, x, y }: {
+  kind: Kind; plays: Play[]; total: number; radius: number; paths: boolean; x: number; y: number
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [h, setH] = useState(0)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (el && el.offsetHeight !== h) setH(el.offsetHeight)
+  })
+  const w = 300
+  const gap = 18
+  const pad = 8
+  const left = x + gap + w + pad <= window.innerWidth ? x + gap : Math.max(pad, x - gap - w)
+  const top = Math.min(Math.max(pad, y - 48), Math.max(pad, window.innerHeight - h - pad))
+  const [one, many] = kind === "pass" ? ["throw", "throws"] : kind === "route" ? ["target", "targets"] : ["carry", "carries"]
+  const stats = plays.length ? kpis(kind, plays).slice(1) : []
+  return createPortal(
+    <div ref={ref} style={{ left, top, width: w, visibility: h ? "visible" : "hidden" }}
+      className="dark pointer-events-none fixed z-50 rounded-xl border border-white/10 bg-zinc-950/95 p-3.5 text-xs text-foreground shadow-2xl backdrop-blur-md">
+      <div className="text-sm font-medium">
+        {plays.length ? `${plays.length} ${plays.length === 1 ? one : many}` : `No ${many} here`}
+      </div>
+      <div className="mb-2.5 text-[11px] text-muted-foreground">
+        {paths ? `paths within ${radius} yds of here` : `ending within ${radius} yds of here`}
+        {plays.length > 0 && ` · ${Math.round((100 * plays.length) / Math.max(1, total))}% of the ${total} on the field`}
+      </div>
+      {stats.length > 0 && (
+        <div className="grid grid-cols-2 gap-1.5">
+          {stats.map((k) => (
+            <div key={k.label} className="rounded-lg border border-white/10 px-2.5 py-1.5">
+              <div className="text-[10px] tracking-wide text-muted-foreground uppercase">{k.label}</div>
+              <div className={cn("font-mono text-sm font-medium", k.tone === "good" && "text-emerald-400", k.tone === "bad" && "text-rose-400")}>
+                {k.value}
+              </div>
+              {k.sub && <div className="truncate text-[10px] text-muted-foreground">{k.sub}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>,
+    document.body,
+  )
+}
+
+/** Maps points through the projective transform taking the four `from` corners to the four `to` corners. */
+function homography(from: [number, number][], to: [number, number][]): ((x: number, y: number) => [number, number]) | null {
+  // solve for h0..h7 (h8 = 1): u = (h0 x + h1 y + h2) / (h6 x + h7 y + 1), v likewise with h3..h5
+  const A: number[][] = []
+  for (let i = 0; i < 4; i++) {
+    const [x, y] = from[i]
+    const [u, v] = to[i]
+    A.push([x, y, 1, 0, 0, 0, -u * x, -u * y, u])
+    A.push([0, 0, 0, x, y, 1, -v * x, -v * y, v])
+  }
+  for (let c = 0; c < 8; c++) {
+    let piv = c
+    for (let r = c + 1; r < 8; r++) if (Math.abs(A[r][c]) > Math.abs(A[piv][c])) piv = r
+    if (Math.abs(A[piv][c]) < 1e-12) return null
+    ;[A[c], A[piv]] = [A[piv], A[c]]
+    for (let r = 0; r < 8; r++) {
+      if (r === c) continue
+      const f = A[r][c] / A[c][c]
+      for (let k = c; k < 9; k++) A[r][k] -= f * A[c][k]
+    }
+  }
+  const h = A.map((row, i) => row[8] / row[i])
+  return (x, y) => {
+    const d = h[6] * x + h[7] * y + 1
+    return [(h[0] * x + h[1] * y + h[2]) / d, (h[3] * x + h[4] * y + h[5]) / d]
+  }
 }
 
 function heatmap(plays: Play[], kind: Kind, heatOf: "end" | "path", ymin: number, ymax: number) {

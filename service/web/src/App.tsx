@@ -366,7 +366,7 @@ export default function App() {
                   <div className="flex flex-wrap items-center justify-between gap-2 px-4 pb-4">
                     <Legend kind={sel.kind} colorBy={colorBy} view={view} undrawn={showUndrawn && sel.kind === "pass"} />
                     <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-                      <MousePointerClick className="size-3.5" /> Hover or click any play
+                      <MousePointerClick className="size-3.5" /> {view === "heat" ? "Hover the heatmap for the plays there" : "Hover or click any play"}
                     </span>
                   </div>
                 </Card>
