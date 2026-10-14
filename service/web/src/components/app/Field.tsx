@@ -31,6 +31,8 @@ interface Props {
   heatOf: "end" | "path"
   heatMetric: HeatMetric
   heatSplit: string
+  /** route charts: draw the run after the catch (off: each route stops at the catch) */
+  routeYac?: boolean
   /** compare against another player / season: their plays (same filters) and both sides' names */
   versus?: { mine: string; other: string; plays: Play[] } | null
   yac: boolean
@@ -86,7 +88,7 @@ const DEFAULT_CAM = { tilt: 40, yaw: 0, zoom: 1, panX: 0, panY: 0 }
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 
 export function Field(props: Props) {
-  const { kind, plays, allPlays, colorBy, view, heatOf, heatMetric, heatSplit, versus, yac, threeD, selectedId, onSelect, animateKey, fullDepth } = props
+  const { kind, plays, allPlays, colorBy, view, heatOf, heatMetric, heatSplit, versus, yac, routeYac = true, threeD, selectedId, onSelect, animateKey, fullDepth } = props
   const vsPlays = heatMetric === "compare" && isVersus(heatSplit) ? versus?.plays ?? null : null
   const showYac = yac && kind === "pass" && view === "plays"
   const wrap = useRef<HTMLDivElement>(null)
@@ -416,7 +418,7 @@ export function Field(props: Props) {
                 onEnter={(e) => setHover({ id: p.id, x: e.clientX, y: e.clientY })}
                 onLeave={() => setHover((h) => (h?.id === p.id ? null : h))}
                 onClick={() => onSelect(p.id === selectedId ? null : p.id)}
-                animate={!threeD}
+                animate={!threeD} noYac={kind === "route" && !routeYac}
               />
             ))}
           </g>
@@ -451,7 +453,7 @@ export function Field(props: Props) {
   )
 }
 
-function PlayMark({ play, kind, colorBy, top, index, dim, focused, many, onEnter, onLeave, onClick, animate }: {
+function PlayMark({ play, kind, colorBy, top, index, dim, focused, many, onEnter, onLeave, onClick, animate, noYac = false }: {
   play: Play
   kind: Kind
   colorBy: ColorBy
@@ -464,6 +466,7 @@ function PlayMark({ play, kind, colorBy, top, index, dim, focused, many, onEnter
   onLeave: () => void
   onClick: () => void
   animate: boolean
+  noYac?: boolean
 }) {
   const color = playColor(play, kind, colorBy)
   const opacity = dim ? 0.12 : focused ? 1 : many ? 0.62 : 0.85
@@ -514,8 +517,10 @@ function PlayMark({ play, kind, colorBy, top, index, dim, focused, many, onEnter
   const firstAc = kind === "route" ? seg.indexOf("after_catch") : -1
   const split = firstAc > 0 ? firstAc : xs.length
   const pre = polyline(xs, yv, top, 0, split)
-  const post = firstAc > 0 ? polyline(xs, yv, top, firstAc - 1, xs.length) : null
-  const end = [xs[xs.length - 1], top - yv[yv.length - 1]]
+  const post = firstAc > 0 && !noYac ? polyline(xs, yv, top, firstAc - 1, xs.length) : null
+  // with the run after the catch hidden, the route ends at the catch - and so does its touchdown ring
+  const last = firstAc > 0 && noYac ? firstAc - 1 : xs.length - 1
+  const end = [xs[last], top - yv[last]]
   const td = play.chart_touchdown === true || play.chart_touchdown === 1
   const afterColor = colorBy === "outcome" ? ROUTE_LINE.after : color
   const line = (d: string, c: string, key: string, w = width) => (
@@ -525,11 +530,11 @@ function PlayMark({ play, kind, colorBy, top, index, dim, focused, many, onEnter
   )
   return (
     <g {...handlers} opacity={opacity} filter={focused ? "url(#glow)" : undefined}>
-      <path d={polyline(xs, yv, top)} fill="none" stroke="transparent" strokeWidth={12} vectorEffect="non-scaling-stroke" />
+      <path d={polyline(xs, yv, top, 0, last + 1)} fill="none" stroke="transparent" strokeWidth={12} vectorEffect="non-scaling-stroke" />
       {line(pre, color, "pre")}
       {post && line(post, afterColor, "post", width * 0.92)}
       {kind === "route" && firstAc > 0 && (
-        <circle cx={xs[firstAc - 1]} cy={top - yv[firstAc - 1]} r={0.32} fill={afterColor} />
+        <circle cx={xs[firstAc - 1]} cy={top - yv[firstAc - 1]} r={0.32} fill={noYac ? color : afterColor} />
       )}
       {td && <circle cx={end[0]} cy={end[1]} r={0.85} fill="none" stroke={ROUTE_LINE.td} strokeWidth={0.2} />}
       {kind === "carry" && (play.chart_fumble_lost === true || play.chart_fumble_lost === 1) && (

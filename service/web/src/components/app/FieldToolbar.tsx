@@ -13,7 +13,7 @@ import type { FieldView } from "./Field"
 export type ExportFormat = "png" | "svg" | "clipboard"
 
 export function FieldToolbar({ kind, view, setView, colorBy, setColorBy, heatOf, setHeatOf, heatMetric, setHeatMetric, heatSplit, setHeatSplit,
-  versusName, onPickPlayer, yac, setYac, threeD, setThreeD, fullDepth, setFullDepth, deeper, onExport, undrawn, showUndrawn, setShowUndrawn }: {
+  versusName, onPickPlayer, yac, setYac, routeYac, setRouteYac, threeD, setThreeD, fullDepth, setFullDepth, deeper, onExport, undrawn, showUndrawn, setShowUndrawn }: {
   kind: Kind
   view: FieldView
   setView: (v: FieldView) => void
@@ -29,6 +29,8 @@ export function FieldToolbar({ kind, view, setView, colorBy, setColorBy, heatOf,
   onPickPlayer: () => void
   yac: boolean
   setYac: (b: boolean) => void
+  routeYac: boolean
+  setRouteYac: (b: boolean) => void
   threeD: boolean
   setThreeD: (b: boolean) => void
   fullDepth: boolean
@@ -111,6 +113,12 @@ export function FieldToolbar({ kind, view, setView, colorBy, setColorBy, heatOf,
           )}
         </>
       )}
+      {kind === "route" && view === "plays" && (
+        <Toggle variant="outline" size="sm" pressed={routeYac} onPressedChange={setRouteYac} className="gap-1.5 px-2.5 text-xs"
+          title={routeYac ? "Showing the run after each catch - turn off to stop every route at the catch" : "Routes stop at the catch - turn on to show the run after it"}>
+          <MoveUp className="size-3.5" /> YAC
+        </Toggle>
+      )}
       {kind === "pass" && view === "plays" && (
         <Toggle variant="outline" size="sm" pressed={yac} onPressedChange={setYac} className="gap-1.5 px-2.5 text-xs"
           title="Yards after the catch: a line from each completion's catch point to where the play ended (straight downfield - play-by-play has no sideways spot)">
@@ -157,7 +165,7 @@ const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1)
 
 /** The legend for a view / colouring: shared by the on-screen legend and the exported image. */
 export function legendSpec(kind: Kind, colorBy: ColorBy, view: FieldView,
-                           heat?: { metric: HeatMetric; split: string; versus?: [string, string] | null }): LegendSpec {
+                           heat?: { metric: HeatMetric; split: string; versus?: [string, string] | null }, routeYac = true): LegendSpec {
   if (view === "heat") {
     const m = heat?.metric ?? "volume"
     if (m === "compare" && heat?.versus) return { gradient: [COMPARE_B, "#3f3f46", COMPARE_A], lo: `more ${heat.versus[1]}`, hi: `more ${heat.versus[0]}` }
@@ -177,14 +185,16 @@ export function legendSpec(kind: Kind, colorBy: ColorBy, view: FieldView,
   else if (colorBy === "route") items = Object.entries(ROUTE_COLORS).map(([r, c]) => [cap(r.toLowerCase()), c])
   else if (kind === "pass") items = Object.entries(OUTCOME).map(([k, c]) => [cap(k.toLowerCase()), c])
   else if (kind === "carry") items = [["Loss", GAIN.LOSS], ["0–5 yds", GAIN.SHORT], ["5+ yds", GAIN.LONG], ["Touchdown", ROUTE_LINE.td]]
-  else items = [["Complete", ROUTE_LINE.complete], ["Incomplete", ROUTE_LINE.incomplete], ["After catch", ROUTE_LINE.after], ["Touchdown", ROUTE_LINE.td]]
+  else items = [["Complete", ROUTE_LINE.complete], ["Incomplete", ROUTE_LINE.incomplete],
+    ...(routeYac ? ([["After catch", ROUTE_LINE.after]] as [string, string][]) : []), ["Touchdown", ROUTE_LINE.td]]
   return { items, dashed: true }
 }
 
-export function Legend({ kind, colorBy, view, heat, undrawn = false }: {
-  kind: Kind; colorBy: ColorBy; view: FieldView; heat?: { metric: HeatMetric; split: string; versus?: [string, string] | null }; undrawn?: boolean
+export function Legend({ kind, colorBy, view, heat, routeYac = true, undrawn = false }: {
+  kind: Kind; colorBy: ColorBy; view: FieldView; heat?: { metric: HeatMetric; split: string; versus?: [string, string] | null }
+  routeYac?: boolean; undrawn?: boolean
 }) {
-  const spec = legendSpec(kind, colorBy, view, heat)
+  const spec = legendSpec(kind, colorBy, view, heat, routeYac)
   if ("gradient" in spec) return <GradientLegend from={spec.gradient[0]} via={spec.gradient[1]} to={spec.gradient[2]} lo={spec.lo} hi={spec.hi} />
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
