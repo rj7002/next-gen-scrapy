@@ -3,8 +3,9 @@
 Scrape NFL **Next Gen Stats** pass, route and carry charts, turn the drawn chart art back into field
 coordinates, and match every dot and line to the real play it came from.
 
-Next Gen Stats publishes per-player chart images - every pass a quarterback threw, every route a
-receiver was targeted on, every carry a back took - but only as pictures. This package downloads those
+Next Gen Stats publishes per-player, per-game chart images of a quarterback's passes, the routes a
+receiver was targeted on and a back's carries (for the players and games NGS chooses to chart) - but only
+as pictures. This package downloads those
 images and recovers the underlying data: each pass becomes an `(x, y)` location in yards from the line
 of scrimmage, each route or carry becomes an ordered path of `(x, y)` points along the field, and (with
 the optional `pbp` extra) each one is matched to its nflverse play-by-play row, so you get down,

@@ -6,7 +6,7 @@ colorTo: blue
 sdk: docker
 app_port: 7860
 pinned: false
-short_description: Every NFL throw, route and run, mapped
+short_description: NFL throws, routes and runs from NGS charts, mapped
 ---
 
 # NFL Field Explorer

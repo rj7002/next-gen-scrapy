@@ -13,7 +13,7 @@ export function Landing({ season, players, onSearch }: { season: number; players
           <span className="text-emerald-600 dark:text-emerald-400">NFL Field</span> Explorer
         </h1>
         <p className="mt-4 text-balance text-muted-foreground sm:text-lg">
-          Every throw, route and run, mapped and matched to play-by-play.
+          Throws, routes and runs from Next Gen Stats charts, mapped and matched to play-by-play.
         </p>
         <button onClick={onSearch}
           className="mt-9 flex h-14 w-full max-w-xl items-center gap-3 rounded-2xl border border-border bg-card/80 px-5 text-left text-muted-foreground shadow-2xl shadow-black/20 backdrop-blur-md transition hover:border-emerald-500/40 hover:bg-card">
