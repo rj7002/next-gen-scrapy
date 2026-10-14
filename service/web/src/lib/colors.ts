@@ -53,6 +53,12 @@ export function routeGuess(play: Play): string | null {
   return play.route_guess?.[0]?.[0] ?? null
 }
 
+/** the play's route class: NGS's own label for the target's route where there is one, else what the line's shape
+ * says (a route chart's own line, or for a pass the target's route chart) - the same label the route tree uses */
+export function playRoute(play: Play): string | null {
+  return play.tree_route ?? routeGuess(play)
+}
+
 /** main colour of a play under a colour mode (routes: the pre-catch line) */
 export function playColor(play: Play, kind: Kind, by: ColorBy): string {
   switch (by) {
@@ -63,7 +69,7 @@ export function playColor(play: Play, kind: Kind, by: ColorBy): string {
     case "down":
       return DOWN_COLORS[String(play.down ?? "")] ?? "#71717a"
     case "route":
-      return ROUTE_COLORS[routeGuess(play) ?? ""] ?? "#a1a1aa"
+      return ROUTE_COLORS[playRoute(play) ?? ""] ?? "#a1a1aa"
     default:
       if (kind === "pass") return OUTCOME[play.pass_type] ?? "#a1a1aa"
       if (kind === "carry") return GAIN[play.gain_class] ?? "#a1a1aa"

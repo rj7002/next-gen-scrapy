@@ -200,6 +200,7 @@ class RuleParser:
         self.receivers()
         self.players_full()
         self.teams()
+        self.route_names()
         self.dataset_words()
         self.seasons_weeks()
         self.clock()
@@ -248,6 +249,25 @@ class RuleParser:
 
             self.rule(rf"\b([a-z][a-z'.\-]+)\s+{last_rx}\b", full)
             self.rule(rf"\b{last_rx}\b", only_last)
+
+    def route_names(self):
+        """Route names -> NGS's label for the target's route (target_route), on pass and route charts alike."""
+        def route(*labels):
+            return lambda m: self.set("target_route", "in", list(labels))
+        r = r"(?:\s+routes?)?"
+        self.rule(r"\bslants?" + r + r"\b", route("SLANT"))
+        self.rule(r"\b(?:go|fade|streak|nine|9|vertical)(?:\s+routes?|\s+balls?|s\b)(?!\w)", route("GO"))
+        self.rule(r"\bposts?" + r + r"\b(?![\s-]*(?:season|snap))", route("POST"))
+        self.rule(r"\b(?<!against )(?<!vs )(?<!versus )corner(?:\s+routes?|s\b)(?!\s*backs?)", route("CORNER"))
+        self.rule(r"\bwheels?" + r + r"\b", route("WHEEL"))
+        self.rule(r"\bquick outs?" + r + r"\b", route("QUICK OUT"))
+        self.rule(r"\bdeep outs?" + r + r"\b", route("DEEP OUT"))
+        self.rule(r"\b(?:outs|out routes?)\b", route("QUICK OUT", "DEEP OUT"))
+        self.rule(r"\b(?:digs?|in routes?|in-breakers?|in-breaking routes?)\b", route("IN/DIG"))
+        self.rule(r"\b(?:hitch(?:es)?|curls?)" + r + r"\b", route("HITCH/CURL"))
+        self.rule(r"\b(?:crossers?|crossing routes?|drags?|shallow cross(?:es)?|shallows)" + r + r"\b", route("SHALLOW CROSS/DRAG"))
+        self.rule(r"\b(?:flat routes?|swings?|swing (?:passes|routes?))\b", route("FLAT", "SWING"))
+        self.rule(r"\b(?:angle|texas)" + r + r"\b", route("TEXAS/ANGLE"))
 
     def players_full(self):
         alpha = re.sub(r"[.'\-]", "", self.t)
@@ -1042,7 +1062,7 @@ def ft_messages(query: str, p: Parse) -> list[dict]:
                                         f"applied: {json.dumps(p.params, sort_keys=True)}\nleftover: {json.dumps(p.ignored)}"}]
 
 
-NAMED = {"receiver_player_name"}   # set from names the rules matched exactly; a model neither adds nor removes them
+NAMED = {"receiver_player_name", "target_route"}   # set from words the rules matched exactly; a model neither adds nor removes them
 
 
 def _apply_small(p: Parse, out: dict, dyn: dict):

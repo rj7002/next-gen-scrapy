@@ -34,7 +34,7 @@ export function FieldToolbar({ kind, view, setView, colorBy, setColorBy, heatOf,
   const modes: [ColorBy, string][] = [
     ["outcome", kind === "carry" ? "Gain" : "Outcome"],
     ["epa", "EPA"],
-    ...(kind === "route" ? ([["route", "Route type"]] as [ColorBy, string][]) : []),
+    ...(kind !== "carry" ? ([["route", "Route type"]] as [ColorBy, string][]) : []),
     ["down", "Down"],
     ["confidence", "Match confidence"],
   ]

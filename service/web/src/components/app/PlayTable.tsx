@@ -3,7 +3,7 @@ import { ArrowDown, ArrowUp } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { type Kind, type Play, weekLabel } from "@/lib/api"
-import { confColor, routeGuess } from "@/lib/colors"
+import { confColor, playRoute } from "@/lib/colors"
 import { situation } from "@/lib/stats"
 import { cn } from "@/lib/utils"
 
@@ -27,7 +27,7 @@ export function PlayTable({ kind, plays, selectedId, onSelect }: { kind: Kind; p
       { key: "sit", label: "Down", get: (p) => (p.down ?? 9) * 100 + (p.ydstogo ?? 0), render: (p) => situation(p) || "—" },
       outcome,
     ]
-    if (kind === "route") list.push({ key: "route", label: "Route", get: (p) => routeGuess(p) ?? "", render: (p) => routeGuess(p) ?? "—" })
+    if (kind !== "carry") list.push({ key: "route", label: "Route", get: (p) => playRoute(p) ?? "", render: (p) => playRoute(p) ?? "—" })
     if (kind !== "carry") list.push({ key: "air", label: "Air", get: (p) => p.air_yards ?? -99, render: (p) => <span className="font-mono">{p.air_yards ?? "—"}</span> })
     list.push(
       { key: "epa", label: "EPA", get: (p) => p.epa ?? -99, render: (p) => (p.epa == null ? "—" : <span className={cn("font-mono", p.epa >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400")}>{p.epa > 0 ? "+" : ""}{Number(p.epa).toFixed(2)}</span>) },

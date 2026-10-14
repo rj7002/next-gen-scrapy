@@ -183,7 +183,7 @@ export default function App() {
     setSearchOpen(false)
     setFilters({})
     setWeeks(null)
-    if (colorBy === "route" && kind !== "route") setColorBy("outcome")
+    if (colorBy === "route" && kind === "carry") setColorBy("outcome")
     setSel({ player, kind, season: s })
   }
 
