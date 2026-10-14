@@ -25,8 +25,10 @@ interface Props {
 
 export function FilterPanel(p: Props) {
   const { specs, groups, plays, state, setState } = p
-  const usable = useMemo(() => specs.filter((s) => s.col !== "season_type" && hasData(plays, s.col)), [specs, plays])
-  const hidden = specs.length - usable.length
+  // the panel's own filters (the Ask bar can use many more; those show up as chips above the field)
+  const panelSpecs = useMemo(() => specs.filter((s) => s.panel !== false), [specs])
+  const usable = useMemo(() => panelSpecs.filter((s) => s.col !== "season_type" && hasData(plays, s.col)), [panelSpecs, plays])
+  const hidden = panelSpecs.length - usable.length
   const set = (col: string, v: FilterValue | null) => {
     const next = { ...state }
     if (v == null) delete next[col]

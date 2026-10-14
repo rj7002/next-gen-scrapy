@@ -14,6 +14,7 @@ import json
 import re
 from dataclasses import dataclass, field
 
+from .askcols import catalog_rules
 from .filters import BY_COL, for_table
 
 DATASETS = ("passes", "routes", "carries")
@@ -202,6 +203,7 @@ class RuleParser:
         self.teams()
         self.route_names()
         self.after_catch()
+        catalog_rules(self)
         self.dataset_words()
         self.seasons_weeks()
         self.clock()
@@ -816,6 +818,29 @@ Playoff week numbers differ by season - for playoff rounds use season_type POST,
 Map football slang sensibly (e.g. "garbage time"/"blowout" -> 4th quarter with a large score margin; "late" -> 4th quarter)."""
 
 
+def _near_values(v: str, valid: set) -> list[str]:
+    """What a model probably meant by a value that isn't spelled like the data's: the same ignoring case, every
+    value containing it ("holding" -> both holdings), or a player by last name (and first initial if given)."""
+    low = v.lower().strip()
+    if not low:
+        return []
+    same = [x for x in valid if x.lower() == low]
+    if same:
+        return same
+    if len(low) >= 4:
+        within = sorted(x for x in valid if low in x.lower())
+        if within:
+            return within
+    words = re.findall(r"[a-z]+", low)
+    if words:
+        last, first = words[-1], (words[0] if len(words) > 1 else "")
+        names = [x for x in valid if "." in x and re.sub(r"[^a-z]", "", x.split(".", 1)[1].lower()) == last
+                 and (not first or x.lower().startswith(first[0]))]
+        if names:
+            return names
+    return []
+
+
 def _coerce(f: dict, op: str, value, dyn: dict):
     """Validate one Gemini-proposed filter; returns the API param value or raises ValueError."""
     kind, col = f["kind"], f["col"]
@@ -849,7 +874,11 @@ def _coerce(f: dict, op: str, value, dyn: dict):
         if col == "defteam":
             v = CHART_TO_PBP.get(v.upper(), v.upper())
         if valid is not None and v not in valid:
-            raise ValueError(f"'{v}' isn't a valid {f['label']}")
+            near = _near_values(v, valid)
+            if not near:
+                raise ValueError(f"'{v}' isn't a valid {f['label']}")
+            out.extend(near)
+            continue
         out.append(v)
     if not out:
         raise ValueError("empty value")

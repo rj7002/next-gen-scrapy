@@ -31,7 +31,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import engine, nl
+from . import derived, engine, nl
 from .filters import GROUPS, for_table
 
 Kind = Literal["pass", "route", "carry"]
@@ -191,6 +191,15 @@ def job_data(job_id: str):
     return job.data
 
 
+@app.get("/api/columns/{job_id}")
+def job_columns(job_id: str, cols: str = Query(..., max_length=2000)):
+    """Columns the play rows leave out (the Ask bar's extra filters), as {col: {play id: value}}."""
+    job = _job(job_id)
+    if job.frame is None:
+        raise HTTPException(409, "not ready yet")
+    return engine.play_columns(job, [c for c in cols.split(",") if c][:20])
+
+
 @app.get("/api/play/{job_id}/{play_id}")
 def play_detail(job_id: str, play_id: str):
     """Everything about one play of a loaded dataset (the panel that opens when a play is clicked)."""
@@ -233,8 +242,14 @@ def _ask_context(kind, season, job):
     j = engine.get(job) if job else None
     if j is not None and j.frame is not None and len(j.frame):
         for f in for_table(engine.TABLE[j.kind]):
-            if f["kind"] in ("choice", "select") and not f["choices"] and f["col"] in j.frame:
-                choices[f["col"]] = {v for v in j.frame[f["col"]].dropna().unique().tolist() if v != ""}
+            if f["kind"] in ("choice", "select") and not f["choices"]:
+                s = derived.column(j.frame, f["col"])
+                if s is None:
+                    continue
+                vals = set()
+                for v in s.dropna():
+                    vals.update(v if isinstance(v, list) else [v])
+                choices[f["col"]] = {v for v in vals if v != ""}
     dyn = {"positions": set(), "choices": choices}
     if j is not None:   # a player's chart is open: questions filter it, they don't switch to someone else's
         dyn["chart"] = {"name": j.name, "table": engine.TABLE[j.kind]}

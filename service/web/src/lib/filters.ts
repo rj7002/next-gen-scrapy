@@ -16,6 +16,8 @@ const falsy = (v: unknown) => v === false || v === 0 || v === "0" || v === "fals
 
 export function matches(play: Play, col: string, f: FilterValue): boolean {
   const v = play[col]
+  // several players at once (tacklers, pass defenders): any of them
+  if (Array.isArray(v)) return f.op === "in" ? v.some((x) => f.values.includes(String(x))) : false
   if (f.op === "in") return v != null && f.values.includes(String(v))
   if (f.op === "bool") return f.value ? truthy(v) : falsy(v)
   if (v == null || v === "") return false

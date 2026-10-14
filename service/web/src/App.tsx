@@ -262,13 +262,41 @@ export default function App() {
     }
   }
 
-  const visible = useMemo(() => (data ? applyFilters(data.plays, filters, { weeks }) : []), [data, filters, weeks])
+  const specByCol = useMemo(() => new Map((specs?.filters ?? []).map((s) => [s.col, s])), [specs])
+  // Ask-bar-only filters (panel=false) use columns the play rows leave out: fetched for this job when a filter needs
+  // them, merged into the rows; until a column is in, its filter waits rather than hiding every play
+  const [extra, setExtra] = useState<{ job: string; cols: Record<string, Record<string, unknown>> }>({ job: "", cols: {} })
+  const askOnly = (c: string) => specByCol.get(c)?.panel === false
+  const extraCols = job && extra.job === job.id ? extra.cols : {}
+  const missing = Object.keys(filters).filter((c) => askOnly(c) && !(c in extraCols))
+  useEffect(() => {
+    if (!job || !data || !missing.length) return
+    let cancelled = false
+    api.columns(job.id, missing).then((got) => {
+      if (!cancelled) setExtra((e) => ({ job: job.id, cols: { ...(e.job === job.id ? e.cols : {}), ...got } }))
+    }).catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [job?.id, data, missing.join(",")])
+  const plays = useMemo(() => {
+    if (!data) return []
+    const cols = Object.keys(extraCols)
+    if (!cols.length) return data.plays
+    return data.plays.map((p) => {
+      const add: Record<string, unknown> = {}
+      for (const c of cols) add[c] = extraCols[c][p.id] ?? null
+      return { ...p, ...add }
+    })
+  }, [data, extraCols])
+  const ready = useMemo(() => Object.fromEntries(Object.entries(filters).filter(([c]) => !missing.includes(c))), [filters, missing.join(",")])
+  const visible = useMemo(() => (data ? applyFilters(plays, ready, { weeks }) : []), [data, plays, ready, weeks])
   // the receivers card lists every receiver under the other filters, so picking one doesn't hide the rest
   const receiverPlays = useMemo(() => {
     if (!data || sel?.kind !== "pass") return []
     const { receiver_player_name: _, ...rest } = filters
-    return applyFilters(data.plays, rest, { weeks })
-  }, [data, sel?.kind, filters, weeks])
+    return applyFilters(plays, Object.fromEntries(Object.entries(rest).filter(([c]) => !missing.includes(c))), { weeks })
+  }, [data, plays, sel?.kind, filters, weeks])
   const pickReceiver = (name: string | null) =>
     setFilters((f) => {
       const { receiver_player_name: _, ...rest } = f
@@ -322,7 +350,8 @@ export default function App() {
   }, [versusKey])
   const versus = useMemo(() => {
     if (!versusTarget || !versusData || versusData.key !== versusKey) return null
-    const ps = applyFilters(versusData.data.plays, filters, { weeks: null })
+    // the other side gets the panel's filters (its rows don't have the Ask-bar-only columns)
+    const ps = applyFilters(versusData.data.plays, Object.fromEntries(Object.entries(filters).filter(([c]) => !askOnly(c))), { weeks: null })
     return { mine: versusTarget.mine, other: versusTarget.other, plays: showUndrawn ? ps : ps.filter((p) => !p.estimated) }
   }, [versusTarget, versusData, versusKey, filters, showUndrawn])
   const heatSpec = { metric: heatMetric, split: heatSplit, versus: versus ? ([versus.mine, versus.other] as [string, string]) : null }
@@ -331,7 +360,7 @@ export default function App() {
   const without = (cols: string[]) => {
     if (!data) return []
     const rest = Object.fromEntries(Object.entries(filters).filter(([c]) => !cols.includes(c)))
-    const ps = applyFilters(data.plays, rest, { weeks })
+    const ps = applyFilters(plays, Object.fromEntries(Object.entries(rest).filter(([c]) => !missing.includes(c))), { weeks })
     return showUndrawn ? ps : ps.filter((p) => !p.estimated)
   }
   const treeCols = sel?.kind === "carry" ? ["run_location", "run_gap"] : ["tree_route"]
@@ -357,7 +386,6 @@ export default function App() {
   }
   const onField = useMemo(() => (showUndrawn ? visible : visible.filter((p) => !p.estimated)), [visible, showUndrawn])
   const selected = useMemo(() => visible.find((p) => p.id === selectedId) ?? data?.plays.find((p) => p.id === selectedId) ?? null, [visible, data, selectedId])
-  const specByCol = useMemo(() => new Map((specs?.filters ?? []).map((s) => [s.col, s])), [specs])
 
   // export the field as an image: always 2D, with whatever filters / colouring are on
   const fieldRef = useRef<FieldHandle>(null)

@@ -77,6 +77,8 @@ export interface FilterSpec {
   since: string | null
   step: number | null
   help: string | null
+  /** false: an Ask-bar-only filter - not in the panel, and its column comes from api.columns when used */
+  panel?: boolean
 }
 
 export interface AskResult {
@@ -143,6 +145,8 @@ export const api = {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ q, kind, season, answer, ...(job ? { job } : {}) }),
     }).then(json<AskResult>),
+  columns: (job: string, cols: string[]) =>
+    apiFetch(`/api/columns/${job}?cols=${encodeURIComponent(cols.join(","))}`).then(json<Record<string, Record<string, unknown>>>),
   play: (job: string, id: string) => apiFetch(`/api/play/${job}/${encodeURIComponent(id)}`).then(json<PlayDetailData>),
   exportUrl: (id: string) => `/api/export/${id}`,
 }

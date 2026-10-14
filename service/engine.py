@@ -37,7 +37,8 @@ from next_gen_scrapy import route_type as RT
 from next_gen_scrapy import scrape as S
 from next_gen_scrapy.extract import PROCESSORS
 
-from .filters import for_table
+from . import derived
+from .filters import BY_COL, for_table
 
 KINDS = ("pass", "route", "carry")
 TABLE = {"pass": "passes", "route": "routes", "carry": "carries"}
@@ -491,8 +492,36 @@ def _receiver_positions(matched: pd.DataFrame) -> list[str | None]:
     return [v if isinstance(v, str) and v in ("WR", "TE", "RB", "FB") else None for v in out]
 
 
+def _panel_cols(kind: str) -> list[str]:
+    """The filter panel's columns: in every play row the app loads (the Ask-bar-only ones come via play_columns)."""
+    return [f["col"] for f in for_table(TABLE[kind]) if f.get("panel", True)]
+
+
+def play_columns(job: "Job", cols: list[str]) -> dict:
+    """{col: {play id: value}} for the job's plays - any filter column, stored or derived - for the Ask bar's filters
+    on columns the play rows leave out."""
+    allowed = {f["col"] for f in for_table(TABLE[job.kind])}
+    out = {}
+    for c in cols:
+        if c not in allowed or c not in BY_COL:
+            continue
+        vals = {}
+        for frame, est in ((job.frame, False), (job.undrawn, True)):
+            s = derived.column(frame, c)
+            if s is None:
+                continue
+            ids = [f"{g}:{float(p) if est else p}" for g, p in zip(frame["game_id"], frame["play_id"])]
+            for i, v in zip(ids, s):
+                v = _clean(v)
+                if v is not None and v != "":
+                    vals[i] = v
+        out[c] = vals
+    return out
+
+
 def _plays_json(kind: str, matched: pd.DataFrame, chart_df: pd.DataFrame, season: int | None = None) -> list[dict]:
-    filt_cols = [f["col"] for f in for_table(TABLE[kind])]
+    filt_cols = _panel_cols(kind)
+    matched = derived.with_columns(matched, filt_cols) if len(matched) else matched
     cols = list(dict.fromkeys(CORE + EXTRA[kind] + filt_cols))
     out = []
     pred = None
@@ -575,7 +604,8 @@ def _undrawn(job, charts, pb: pd.DataFrame, matched: pd.DataFrame) -> pd.DataFra
 def _undrawn_json(kind: str, und: pd.DataFrame) -> list[dict]:
     if und is None or not len(und):
         return []
-    filt_cols = [f["col"] for f in for_table(TABLE[kind])]
+    filt_cols = _panel_cols(kind)
+    und = derived.with_columns(und, filt_cols)
     cols = list(dict.fromkeys(CORE + EXTRA[kind] + filt_cols))
     out = []
     for _, r in und.iterrows():
