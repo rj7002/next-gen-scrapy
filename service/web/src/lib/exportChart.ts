@@ -115,9 +115,9 @@ export function buildChartSvg(src: SVGSVGElement, o: ExportOptions): { markup: s
     lg.append(el("text", { x: gx + 278, y: ly }, o.legend.hi))
   }
   out.append(lg)
-  // wordmark, top right beside the title: "NGS" in green, "Explorer" muted
+  // wordmark, top right beside the title: "NFL Field" in green, "Explorer" muted
   out.append(el("text", { x: W - pad, y: 76, "text-anchor": "end", "font-size": 22, fill: "#71717a" }, "Explorer"))
-  out.append(el("text", { x: W - pad - 98, y: 76, "text-anchor": "end", "font-size": 22, "font-weight": 600, fill: "#10b981" }, "NGS"))
+  out.append(el("text", { x: W - pad - 98, y: 76, "text-anchor": "end", "font-size": 22, "font-weight": 600, fill: "#10b981" }, "NFL Field"))
   return { markup: new XMLSerializer().serializeToString(out), width: W, height: H }
 }
 

@@ -524,6 +524,9 @@ export default function App() {
           )}
         </main>
       )}
+      <footer className="border-t border-border/60 px-4 py-4 text-center text-[11px] text-muted-foreground">
+        Not affiliated with or endorsed by the NFL. Built on NFL Next Gen Stats charts and nflverse play-by-play.
+      </footer>
       <PlayPanel jobId={job?.id} play={selected} kind={sel?.kind ?? "pass"} onClose={() => setSelectedId(null)} />
       <Toaster position="bottom-right" theme={dark ? "dark" : "light"} richColors closeButton />
     </div>

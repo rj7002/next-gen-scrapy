@@ -10,10 +10,10 @@ export function Landing({ season, players, onSearch }: { season: number; players
       <FieldBackdrop />
       <div className="relative z-10 flex w-full max-w-2xl flex-1 flex-col items-center justify-center pb-[22vh] text-center">
         <h1 className="text-5xl font-semibold tracking-tight sm:text-7xl">
-          <span className="text-emerald-600 dark:text-emerald-400">NGS</span> Explorer
+          <span className="text-emerald-600 dark:text-emerald-400">NFL Field</span> Explorer
         </h1>
         <p className="mt-4 text-balance text-muted-foreground sm:text-lg">
-          Explore Next Gen Stats tracking data in depth.
+          Every throw, route and run, mapped and matched to play-by-play.
         </p>
         <button onClick={onSearch}
           className="mt-9 flex h-14 w-full max-w-xl items-center gap-3 rounded-2xl border border-border bg-card/80 px-5 text-left text-muted-foreground shadow-2xl shadow-black/20 backdrop-blur-md transition hover:border-emerald-500/40 hover:bg-card">

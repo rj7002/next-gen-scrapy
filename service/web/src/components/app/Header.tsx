@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button"
 import { Kbd, KbdGroup } from "@/components/ui/kbd"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
-/** The NGS Explorer mark (same drawing as public/favicon.svg): a route off the line of scrimmage into a catch ring. */
+/** The NFL Field Explorer mark (same drawing as public/favicon.svg): a route off the line of scrimmage into a catch ring. */
 export function Logo({ className = "" }: { className?: string }) {
   return (
     <svg viewBox="0 0 32 32" className={className} aria-hidden>
@@ -39,7 +39,7 @@ export function Header({ seasons, season, onSeason, onSearch, dark, onTheme }: {
         <a href="/" className="flex items-center gap-2.5">
           <Logo className="size-7" />
           <span className="text-[15px] font-semibold tracking-tight">
-            NGS <span className="text-muted-foreground">Explorer</span>
+            NFL Field <span className="text-muted-foreground">Explorer</span>
           </span>
         </a>
         <div className="ml-auto flex items-center gap-1.5 sm:gap-2">

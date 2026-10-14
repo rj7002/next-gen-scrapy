@@ -52,7 +52,7 @@ def _load_env(path: Path) -> None:
 _load_env(Path(__file__).resolve().parent.parent / ".env")
 
 app = FastAPI(
-    title="next-gen-scrapy explorer",
+    title="NFL Field Explorer",
     description="Next Gen Stats charts read live by the next_gen_scrapy package and matched to play-by-play.",
     version="3.0.0",
     docs_url=None, redoc_url=None, openapi_url=None,     # don't publish a map of the API

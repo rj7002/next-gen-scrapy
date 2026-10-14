@@ -1,4 +1,4 @@
-# NGS Explorer on a Hugging Face Docker Space: build the React app, then run the FastAPI server on port 7860.
+# NFL Field Explorer on a Hugging Face Docker Space: build the React app, then run the FastAPI server on port 7860.
 
 FROM node:24-slim AS web
 WORKDIR /web
