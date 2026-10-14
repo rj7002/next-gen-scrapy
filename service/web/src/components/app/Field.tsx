@@ -2,7 +2,8 @@ import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useSt
 import { createPortal } from "react-dom"
 import { type Kind, type Play, unmatchedText } from "@/lib/api"
 import type { HeatImage } from "@/lib/exportChart"
-import { type ColorBy, heat, playColor, ROUTE_LINE } from "@/lib/colors"
+import { type ColorBy, playColor, ROUTE_LINE } from "@/lib/colors"
+import { COMPARE_A, COMPARE_B, type HeatMetric, heatField, heatImage, heatSlices, splitOf } from "@/lib/heat"
 import { kpis, situation } from "@/lib/stats"
 import { cn } from "@/lib/utils"
 import { PlayFacts, playWhen } from "./PlayDetail"
@@ -28,6 +29,9 @@ interface Props {
   colorBy: ColorBy
   view: FieldView
   heatOf: "end" | "path"
+  heatMetric: HeatMetric
+  heatSplit: string
+  yac: boolean
   threeD: boolean
   selectedId: string | null
   onSelect: (id: string | null) => void
@@ -37,9 +41,21 @@ interface Props {
   ref?: React.Ref<FieldHandle>
 }
 
-function ys(p: Play, kind: Kind): number[] {
-  if (kind === "pass") return p.y_coord != null ? [p.y_coord] : []
+function ys(p: Play, kind: Kind, yac = false): number[] {
+  if (kind === "pass") {
+    if (p.y_coord == null) return []
+    const end = yac ? yacEnd(p) : null
+    return end != null ? [p.y_coord, end] : [p.y_coord]
+  }
   return (p.path_y as number[]) ?? []
+}
+
+/** where a completion's run after the catch ended (straight downfield from the catch: pbp has no sideways spot) */
+export function yacEnd(p: Play): number | null {
+  if (p.y_coord == null || !(p.pass_type === "COMPLETE" || p.pass_type === "TOUCHDOWN")) return null
+  const yac = p.yards_after_catch
+  if (yac != null && yac !== "" && !Number.isNaN(Number(yac))) return p.y_coord + Number(yac)
+  return p.yards_gained != null && !Number.isNaN(Number(p.yards_gained)) ? Number(p.yards_gained) : null
 }
 
 /** the point a play "lands" at: pass dot, route catch point (or end), carry end */
@@ -68,7 +84,8 @@ const DEFAULT_CAM = { tilt: 40, yaw: 0, zoom: 1, panX: 0, panY: 0 }
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 
 export function Field(props: Props) {
-  const { kind, plays, allPlays, colorBy, view, heatOf, threeD, selectedId, onSelect, animateKey, fullDepth } = props
+  const { kind, plays, allPlays, colorBy, view, heatOf, heatMetric, heatSplit, yac, threeD, selectedId, onSelect, animateKey, fullDepth } = props
+  const showYac = yac && kind === "pass" && view === "plays"
   const wrap = useRef<HTMLDivElement>(null)
   // hover position is in viewport coordinates: the card is portalled to <body> so the field never clips it
   const [hover, setHover] = useState<{ id: string; x: number; y: number } | null>(null)
@@ -158,7 +175,7 @@ export function Field(props: Props) {
       const tops: number[] = []
       const lows: number[] = []
       for (const p of list) {
-        const v = ys(p, kind)
+        const v = ys(p, kind, showYac)
         if (!v.length) continue
         tops.push(Math.max(...v))
         lows.push(Math.min(...v))
@@ -176,7 +193,7 @@ export function Field(props: Props) {
       focus = Math.min(full, Math.max(focus, Math.ceil(q(shown, shown.length < 20 ? 1 : 0.95) + 6)))
     const hi = fullDepth ? full : focus
     return [lo, hi, shown.filter((t) => t > hi).length]
-  }, [allPlays, plays, kind, fullDepth])
+  }, [allPlays, plays, kind, fullDepth, showYac])
   const reported = useRef(-1)
   if (reported.current !== deeper) {
     reported.current = deeper
@@ -185,10 +202,11 @@ export function Field(props: Props) {
   const H = ymax - ymin
   const Y = (y: number) => ymax - y
 
-  const heatImg = useMemo(() => (view === "heat" ? heatmap(plays, kind, heatOf, ymin, ymax) : null), [view, plays, kind, heatOf, ymin, ymax])
+  const heatF = useMemo(() => (view === "heat" ? heatField(plays, kind, heatOf, heatMetric, heatSplit, XL, W, ymin, ymax, landing) : null),
+    [view, plays, kind, heatOf, heatMetric, heatSplit, ymin, ymax])
+  const heatImg = useMemo(() => (heatF ? { url: heatImage(heatF), x: XL, y: 0, w: W, h: ymax - ymin } : null), [heatF, ymin, ymax])
   // in 3D the heatmap rises off the field: stacked slices, each lifted by the density it marks
-  const heatStack = useMemo(() => (view === "heat" && threeD ? heatSlices(plays, kind, heatOf, ymin, ymax) : null),
-    [view, threeD, plays, kind, heatOf, ymin, ymax])
+  const heatStack = useMemo(() => (heatF && threeD ? heatSlices(heatF) : null), [heatF, threeD])
   // the SVG letterboxes its viewBox (max height): the slices sit exactly over the drawn field
   const fit = Math.min(svgW / W, svgH / (ymax - ymin)) || 0
   const box = { w: W * fit, h: (ymax - ymin) * fit, x: (svgW - W * fit) / 2, y: (svgH - (ymax - ymin) * fit) / 2 }
@@ -226,8 +244,12 @@ export function Field(props: Props) {
   }, [view])
   useImperativeHandle(props.ref, () => ({
     svg: () => svgRef.current,
-    heat: () => heatImg ?? heatmap(plays, kind, heatOf, ymin, ymax),
-  }), [heatImg, plays, kind, heatOf, ymin, ymax])
+    heat: () => {
+      if (heatImg) return heatImg
+      const f = heatField(plays, kind, heatOf, heatMetric, heatSplit, XL, W, ymin, ymax, landing)
+      return f ? { url: heatImage(f), x: XL, y: 0, w: W, h: ymax - ymin } : null
+    },
+  }), [heatImg, plays, kind, heatOf, heatMetric, heatSplit, ymin, ymax])
 
   const byId = useMemo(() => new Map(plays.map((p) => [p.id, p])), [plays])
   const hovered = hover ? byId.get(hover.id) : null
@@ -350,6 +372,25 @@ export function Field(props: Props) {
               strokeOpacity={0.85} strokeWidth={1.5} strokeDasharray="4 3" vectorEffect="non-scaling-stroke" pointerEvents="none" />
           )}
 
+          {showYac && (
+            <g data-layer="yac" pointerEvents="none">
+              <defs>
+                <marker id="yac-head" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+                  <path d="M0,0 L10,5 L0,10 z" fill="context-stroke" />
+                </marker>
+              </defs>
+              {plays.map((p) => {
+                const end = yacEnd(p)
+                if (end == null || p.x_coord == null || Math.abs(end - p.y_coord) < 0.5) return null
+                return (
+                  <line key={p.id} x1={p.x_coord} y1={Y(p.y_coord)} x2={p.x_coord} y2={Y(end)} stroke={playColor(p, kind, colorBy)}
+                    strokeOpacity={focus != null && p.id !== focus ? 0.15 : 0.7} strokeWidth={1.4} vectorEffect="non-scaling-stroke"
+                    markerEnd="url(#yac-head)" />
+                )
+              })}
+            </g>
+          )}
+
           <g key={animateKey} data-layer="plays" opacity={view === "heat" ? 0.18 : 1}
             style={view === "heat" ? { pointerEvents: "none" } : undefined}>
             {ordered.map((p, i) => (
@@ -387,7 +428,7 @@ export function Field(props: Props) {
       {hovered && hover && canHover && !dragging && view !== "heat" && <PlayHoverCard play={hovered} kind={kind} x={hover.x} y={hover.y} />}
       {spot && region && !dragging && (
         <RegionCard kind={kind} plays={region} total={plays.length} radius={radius} paths={heatOf === "path" && kind !== "pass"}
-          x={spot.cx} y={spot.cy} />
+          split={heatMetric === "compare" ? splitOf(kind, heatSplit) : undefined} x={spot.cx} y={spot.cy} />
       )}
     </div>
   )
@@ -533,8 +574,8 @@ function PlayHoverCard({ play, kind, x, y }: { play: Play; kind: Kind; x: number
 }
 
 /** The heatmap's hover card: the same numbers as the cards above the field, for the plays around the cursor. */
-function RegionCard({ kind, plays, total, radius, paths, x, y }: {
-  kind: Kind; plays: Play[]; total: number; radius: number; paths: boolean; x: number; y: number
+function RegionCard({ kind, plays, total, radius, paths, split, x, y }: {
+  kind: Kind; plays: Play[]; total: number; radius: number; paths: boolean; split?: ReturnType<typeof splitOf>; x: number; y: number
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const [h, setH] = useState(0)
@@ -548,7 +589,8 @@ function RegionCard({ kind, plays, total, radius, paths, x, y }: {
   const left = x + gap + w + pad <= window.innerWidth ? x + gap : Math.max(pad, x - gap - w)
   const top = Math.min(Math.max(pad, y - 48), Math.max(pad, window.innerHeight - h - pad))
   const [one, many] = kind === "pass" ? ["throw", "throws"] : kind === "route" ? ["target", "targets"] : ["carry", "carries"]
-  const stats = plays.length ? kpis(kind, plays).slice(1) : []
+  const stats = plays.length && !split ? kpis(kind, plays).slice(1) : []
+  const sides = split && plays.length ? (["a", "b"] as const).map((s) => plays.filter((p) => split.side(p) === s)) : null
   return createPortal(
     <div ref={ref} style={{ left, top, width: w, visibility: h ? "visible" : "hidden" }}
       className="dark pointer-events-none fixed z-50 rounded-xl border border-white/10 bg-zinc-950/95 p-3.5 text-xs text-foreground shadow-2xl backdrop-blur-md">
@@ -559,6 +601,27 @@ function RegionCard({ kind, plays, total, radius, paths, x, y }: {
         {paths ? `paths within ${radius} yds of here` : `ending within ${radius} yds of here`}
         {plays.length > 0 && ` · ${Math.round((100 * plays.length) / Math.max(1, total))}% of the ${total} on the field`}
       </div>
+      {sides && split && (
+        <table className="w-full text-[11px]">
+          <thead>
+            <tr className="text-muted-foreground">
+              <th />
+              <th className="pb-1 text-right font-medium" style={{ color: COMPARE_A }}>{split.a} · {sides[0].length}</th>
+              <th className="pb-1 text-right font-medium" style={{ color: COMPARE_B }}>{split.b} · {sides[1].length}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(sides[0].length ? kpis(kind, sides[0]) : kpis(kind, sides[1])).slice(1).map((k, i) => (
+              <tr key={k.label} className="border-t border-white/5">
+                <td className="py-1 text-muted-foreground">{k.label}</td>
+                {sides.map((side, j) => (
+                  <td key={j} className="py-1 text-right font-mono">{side.length ? kpis(kind, side)[i + 1].value : "—"}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
       {stats.length > 0 && (
         <div className="grid grid-cols-2 gap-1.5">
           {stats.map((k) => (
@@ -605,101 +668,3 @@ function homography(from: [number, number][], to: [number, number][]): ((x: numb
   }
 }
 
-function heatmap(plays: Play[], kind: Kind, heatOf: "end" | "path", ymin: number, ymax: number) {
-  const d = density(plays, kind, heatOf, ymin, ymax)
-  if (!d) return null
-  const { t, nx, ny } = d
-  const canvas = document.createElement("canvas")
-  canvas.width = nx
-  canvas.height = ny
-  const ctx = canvas.getContext("2d")!
-  const img = ctx.createImageData(nx, ny)
-  for (let i = 0; i < t.length; i++) {
-    const [r, g, b] = heat(t[i])
-    img.data[4 * i] = r
-    img.data[4 * i + 1] = g
-    img.data[4 * i + 2] = b
-    img.data[4 * i + 3] = Math.round(255 * Math.min(1, t[i] * 1.6) * 0.92)
-  }
-  ctx.putImageData(img, 0, 0)
-  return { url: canvas.toDataURL(), x: XL, y: 0, w: W, h: ymax - ymin }
-}
-
-/** The 3D heatmap: SLICES images, slice k showing where the density reaches its level, coloured for that level
- * and soft at its edge - stacked at heights in proportion they make a contoured mound of the density. The faint
- * spread below FLOOR stays on the flat heatmap underneath, so the field's lines still show through. */
-const SLICES = 36
-const FLOOR = 0.14
-function heatSlices(plays: Play[], kind: Kind, heatOf: "end" | "path", ymin: number, ymax: number): string[] | null {
-  const d = density(plays, kind, heatOf, ymin, ymax)
-  if (!d) return null
-  const { t, nx, ny } = d
-  const canvas = document.createElement("canvas")
-  canvas.width = nx
-  canvas.height = ny
-  const ctx = canvas.getContext("2d")!
-  const out: string[] = []
-  for (let k = 1; k <= SLICES; k++) {
-    const level = FLOOR + ((1 - FLOOR) * k) / SLICES
-    const [r, g, b] = heat(level)
-    const shade = 0.72 + 0.28 * level              // lower slices a touch darker: reads as depth from the side
-    const opacity = 0.5 + 0.45 * (k / SLICES)      // and the lower ones partly see-through
-    const img = ctx.createImageData(nx, ny)
-    let any = false
-    for (let i = 0; i < t.length; i++) {
-      const a = Math.min(1, Math.max(0, ((t[i] - level) * SLICES) / (1 - FLOOR) + 0.5))
-      if (a <= 0) continue
-      any = true
-      img.data[4 * i] = r * shade
-      img.data[4 * i + 1] = g * shade
-      img.data[4 * i + 2] = b * shade
-      img.data[4 * i + 3] = Math.round(255 * a * opacity)
-    }
-    if (!any) break
-    ctx.putImageData(img, 0, 0)
-    out.push(canvas.toDataURL())
-  }
-  return out
-}
-
-/** Smoothed density of the plays' end points (or whole paths) on a half-yard grid, scaled 0-1. */
-function density(plays: Play[], kind: Kind, heatOf: "end" | "path", ymin: number, ymax: number) {
-  const res = 0.5
-  const nx = Math.round(W / res)
-  const ny = Math.round((ymax - ymin) / res)
-  const grid = new Float32Array(nx * ny)
-  const sigma = heatOf === "path" ? 1.2 : 1.7
-  const rad = Math.ceil((3 * sigma) / res)
-  const ker: number[] = []
-  for (let dy = -rad; dy <= rad; dy++)
-    for (let dx = -rad; dx <= rad; dx++) ker.push(Math.exp(-((dx * res) ** 2 + (dy * res) ** 2) / (2 * sigma * sigma)))
-  const add = (x: number, y: number, w: number) => {
-    const cx = Math.round((x - XL) / res)
-    const cy = Math.round((ymax - y) / res)
-    let k = 0
-    for (let dy = -rad; dy <= rad; dy++)
-      for (let dx = -rad; dx <= rad; dx++, k++) {
-        const gx = cx + dx
-        const gy = cy + dy
-        if (gx >= 0 && gx < nx && gy >= 0 && gy < ny) grid[gy * nx + gx] += ker[k] * w
-      }
-  }
-  for (const p of plays) {
-    if (heatOf === "path" && kind !== "pass") {
-      const xs: number[] = p.path_x ?? []
-      const yv: number[] = p.path_y ?? []
-      const step = 2
-      const w = 1 / Math.max(1, xs.length / step)
-      for (let i = 0; i < xs.length; i += step) add(xs[i], yv[i], w)
-    } else {
-      const l = landing(p, kind)
-      if (l) add(l[0], l[1], 1)
-    }
-  }
-  let max = 0
-  for (const v of grid) max = Math.max(max, v)
-  if (max <= 0) return null
-  const t = new Float32Array(grid.length)
-  for (let i = 0; i < grid.length; i++) t[i] = Math.pow(grid[i] / max, 0.65)
-  return { t, nx, ny }
-}

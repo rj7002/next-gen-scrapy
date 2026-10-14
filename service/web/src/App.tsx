@@ -24,6 +24,7 @@ import { api, type Dataset, type FilterSpec, type Job, KIND_NOUN, type Kind, kin
 import type { ColorBy } from "@/lib/colors"
 import { exportChart } from "@/lib/exportChart"
 import { applyFilters, describe, type FilterState, fromParams } from "@/lib/filters"
+import { type HeatMetric, METRICS, splitOf } from "@/lib/heat"
 import { answerJSON, modelStatus, preload, webgpuSupported } from "@/lib/llm"
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -57,6 +58,9 @@ export default function App() {
   const [colorBy, setColorBy] = useState<ColorBy>(() => (url0.current.get("color") as ColorBy) || "outcome")
   const [view, setView] = useState<FieldView>(() => (url0.current.get("view") as FieldView) || "plays")
   const [heatOf, setHeatOf] = useState<"end" | "path">(() => (url0.current.get("heat") as "end" | "path") || "end")
+  const [heatMetricPick, setHeatMetric] = useState<HeatMetric>(() => (url0.current.get("hm") as HeatMetric) || "volume")
+  const [heatSplitPick, setHeatSplit] = useState(() => url0.current.get("hs") || "coverage")
+  const [yac, setYac] = useState(() => url0.current.get("yac") === "1")
   const [threeD, setThreeD] = useState(() => url0.current.get("3d") === "1")
   // incompletions NGS didn't draw: always counted in the stats, drawn on the field only when asked for
   const [showUndrawn, setShowUndrawn] = useState(() => url0.current.get("undrawn") === "1")
@@ -109,11 +113,14 @@ export default function App() {
     const q = new URLSearchParams({ player: sel.player.esb_id, kind: sel.kind, season: String(sel.season) })
     if (view !== "plays") q.set("view", view)
     if (view === "heat" && heatOf !== "end") q.set("heat", heatOf)
+    if (view === "heat" && heatMetricPick !== "volume") q.set("hm", heatMetricPick)
+    if (view === "heat" && heatMetricPick === "compare") q.set("hs", heatSplitPick)
+    if (yac) q.set("yac", "1")
     if (colorBy !== "outcome") q.set("color", colorBy)
     if (threeD) q.set("3d", "1")
     if (showUndrawn) q.set("undrawn", "1")
     window.history.replaceState(null, "", `?${q}`)
-  }, [sel, view, heatOf, colorBy, threeD, showUndrawn])
+  }, [sel, view, heatOf, heatMetricPick, heatSplitPick, yac, colorBy, threeD, showUndrawn])
 
   useEffect(() => {
     if (season == null) return
@@ -238,6 +245,21 @@ export default function App() {
   }
 
   const visible = useMemo(() => (data ? applyFilters(data.plays, filters, { weeks }) : []), [data, filters, weeks])
+  // the receivers card lists every receiver under the other filters, so picking one doesn't hide the rest
+  const receiverPlays = useMemo(() => {
+    if (!data || sel?.kind !== "pass") return []
+    const { receiver_player_name: _, ...rest } = filters
+    return applyFilters(data.plays, rest, { weeks })
+  }, [data, sel?.kind, filters, weeks])
+  const pickReceiver = (name: string | null) =>
+    setFilters((f) => {
+      const { receiver_player_name: _, ...rest } = f
+      return name ? { ...rest, receiver_player_name: { op: "in", values: [name] } } : rest
+    })
+  // the heatmap's metric / split, held to what this chart kind offers (CPOE is passes only, ...)
+  const heatMetric: HeatMetric = sel && METRICS[sel.kind].some(([m]) => m === heatMetricPick) ? heatMetricPick : "volume"
+  const heatSplit = sel ? splitOf(sel.kind, heatSplitPick).key : heatSplitPick
+  const heatSpec = { metric: heatMetric, split: heatSplit }
   const onField = useMemo(() => (showUndrawn ? visible : visible.filter((p) => !p.estimated)), [visible, showUndrawn])
   const selected = useMemo(() => visible.find((p) => p.id === selectedId) ?? data?.plays.find((p) => p.id === selectedId) ?? null, [visible, data, selectedId])
   const specByCol = useMemo(() => new Map((specs?.filters ?? []).map((s) => [s.col, s])), [specs])
@@ -260,13 +282,18 @@ export default function App() {
     if (v === "plays" && colorBy !== "outcome")
       parts.push(`colored by ${({ epa: "EPA", route: "route type", down: "down", confidence: "match confidence" } as Record<string, string>)[colorBy] ?? colorBy}`)
     if (v === "heat" && sel.kind !== "pass") parts.push(heatOf === "end" ? (sel.kind === "route" ? "catch points" : "end points") : "whole paths")
+    if (v === "heat" && heatMetric === "compare") {
+      const sp = splitOf(sel.kind, heatSplit)
+      parts.push(`where ${sp.a} vs ${sp.b} plays go, each as a share of its own`)
+    } else if (v === "heat" && heatMetric !== "volume") parts.push(`coloured by ${METRICS[sel.kind].find(([m]) => m === heatMetric)?.[1]}, faded where plays are few`)
+    if (v === "plays" && yac && sel.kind === "pass") parts.push("YAC lines straight downfield from the catch")
     const filename = [data.player.name, data.season, sel.kind === "pass" ? "passing" : sel.kind === "route" ? "routes" : "rushing",
       v === "heat" ? "heatmap" : "chart"].join("_").replace(/[^\w.-]+/g, "_")
     try {
       await exportChart(svg, {
         view: v, heat: v === "heat" ? fieldRef.current!.heat() : null, format, filename,
         title: `${data.player.name} · ${data.season} ${what} ${v === "heat" ? "heatmap" : "chart"}`,
-        subtitle: parts.join(" · "), legend: legendSpec(sel.kind, colorBy, v),
+        subtitle: parts.join(" · "), legend: legendSpec(sel.kind, colorBy, v, heatSpec),
       })
       toast.success(format === "clipboard" ? "Copied to the clipboard" : `Saved ${filename}.${format}`)
     } catch (e) {
@@ -354,17 +381,19 @@ export default function App() {
                       {weeks && <Badge variant="secondary">Weeks {[...weeks].map((w) => weekLabel(w)).join(", ")}</Badge>}
                     </div>
                     <FieldToolbar kind={sel.kind} view={view} setView={setView} colorBy={colorBy} setColorBy={setColorBy}
-                      heatOf={heatOf} setHeatOf={setHeatOf} threeD={threeD} setThreeD={setThreeD}
+                      heatOf={heatOf} setHeatOf={setHeatOf} heatMetric={heatMetric} setHeatMetric={setHeatMetric}
+                      heatSplit={heatSplit} setHeatSplit={setHeatSplit} yac={yac} setYac={setYac} threeD={threeD} setThreeD={setThreeD}
                       fullDepth={fullDepth} setFullDepth={setFullDepth} deeper={deeper} onExport={exportField}
                       undrawn={data.counts.undrawn ?? 0} showUndrawn={showUndrawn} setShowUndrawn={setShowUndrawn} />
                   </div>
                   <div className="bg-[#0b0c0f]">
                     <Field ref={fieldRef} kind={sel.kind} plays={onField} allPlays={data.plays} colorBy={colorBy} view={view} heatOf={heatOf}
+                      heatMetric={heatMetric} heatSplit={heatSplit} yac={yac}
                       threeD={threeD} selectedId={selectedId} onSelect={setSelectedId} animateKey={`${data.kind}-${data.version}-${sel.player.esb_id}`}
                       fullDepth={fullDepth} onDeeper={setDeeper} />
                   </div>
                   <div className="flex flex-wrap items-center justify-between gap-2 px-4 pb-4">
-                    <Legend kind={sel.kind} colorBy={colorBy} view={view} undrawn={showUndrawn && sel.kind === "pass"} />
+                    <Legend kind={sel.kind} colorBy={colorBy} view={view} heat={heatSpec} undrawn={showUndrawn && sel.kind === "pass"} />
                     <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
                       <MousePointerClick className="size-3.5" /> {view === "heat" ? "Hover the heatmap for the plays there" : "Hover or click any play"}
                     </span>
@@ -378,7 +407,8 @@ export default function App() {
                     <TabsTrigger value="games">Games</TabsTrigger>
                   </TabsList>
                   <TabsContent value="insights" className="mt-3">
-                    <Insights kind={sel.kind} plays={visible} fieldPlays={onField} />
+                    <Insights kind={sel.kind} plays={visible} fieldPlays={onField} receiverPlays={receiverPlays}
+                      receiver={(filters.receiver_player_name as { values?: string[] } | undefined)?.values?.[0] ?? null} onReceiver={pickReceiver} />
                   </TabsContent>
                   <TabsContent value="plays" className="mt-3">
                     <PlayTable kind={sel.kind} plays={visible} selectedId={selectedId} onSelect={setSelectedId} />

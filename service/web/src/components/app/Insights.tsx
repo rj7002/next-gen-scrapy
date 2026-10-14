@@ -5,6 +5,7 @@ import { useReducedMotion } from "@/lib/motion"
 import type { Kind, Play } from "@/lib/api"
 import { byWeek, coverage, depth, direction, gains } from "@/lib/stats"
 import { cn } from "@/lib/utils"
+import { ReceiversPanel } from "./Receivers"
 import { RouteTreePanel } from "./RouteTree"
 import { RunGapsPanel } from "./RunGaps"
 
@@ -148,7 +149,10 @@ function Coverage({ plays }: { plays: Play[] }) {
 
 /** fieldPlays: what's drawn on the field (no undrawn throws unless they're shown) - the route tree and run gaps
  * count exactly those */
-export function Insights({ kind, plays, fieldPlays }: { kind: Kind; plays: Play[]; fieldPlays: Play[] }) {
+export function Insights({ kind, plays, fieldPlays, receiverPlays, receiver, onReceiver }: {
+  kind: Kind; plays: Play[]; fieldPlays: Play[]
+  receiverPlays?: Play[]; receiver?: string | null; onReceiver?: (name: string | null) => void
+}) {
   const panels = [
     kind === "carry" && <Gains key="gains" plays={plays} />,
     kind !== "carry" && <Depth key="depth" kind={kind} plays={plays} />,
@@ -159,6 +163,7 @@ export function Insights({ kind, plays, fieldPlays }: { kind: Kind; plays: Play[
   return (
     <div className="flex flex-col gap-3">
     {kind === "carry" ? <RunGapsPanel plays={fieldPlays} /> : <RouteTreePanel kind={kind} plays={fieldPlays} />}
+    {kind === "pass" && onReceiver && <ReceiversPanel plays={receiverPlays ?? plays} selected={receiver ?? null} onPick={onReceiver} />}
     <div className={cn("grid gap-3 md:grid-cols-2", panels.length % 3 === 0 && "xl:grid-cols-3", panels.length === 5 && "xl:grid-cols-6 xl:[&>*:nth-child(-n+3)]:col-span-2 xl:[&>*:nth-child(n+4)]:col-span-3")}>
       {panels}
     </div>

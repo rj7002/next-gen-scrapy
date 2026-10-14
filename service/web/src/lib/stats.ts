@@ -236,3 +236,45 @@ export function runGaps(plays: Play[]) {
   const total = gaps.reduce((n, g) => n + g.carries, 0)
   return { gaps, total, unknown: plays.filter((p) => p.matched).length - total, unmatched: plays.filter((p) => !p.matched).length }
 }
+
+export interface ReceiverRow {
+  name: string; position: string | null; targets: number; share: number; catches: number; yards: number
+  adot: number | null; epa: number | null; td: number
+}
+
+/** a quarterback's throws by target: volume, share, and what came of them; plus each week's target share for
+ * the top `top` receivers (the rest as "Others") */
+export function receivers(plays: Play[], top = 5) {
+  const g = new Map<string, Play[]>()
+  for (const p of plays) {
+    const n = p.receiver_player_name
+    if (!n) continue
+    g.set(n, [...(g.get(n) ?? []), p])
+  }
+  const total = [...g.values()].reduce((a, ps) => a + ps.length, 0)
+  const rows: ReceiverRow[] = [...g.entries()].map(([name, ps]) => {
+    const m = ps.filter((p) => p.matched)
+    const comp = ps.filter((p) => isCatch(p, "pass"))
+    return {
+      name, position: ps.find((p) => p.receiver_position)?.receiver_position ?? null,
+      targets: ps.length, share: total ? ps.length / total : 0, catches: comp.length,
+      yards: sum(m.filter((p) => truthy(p.complete_pass)).map((p) => num(p.yards_gained))),
+      adot: mean(m.map((p) => num(p.air_yards))), epa: mean(m.map((p) => num(p.epa))),
+      td: ps.filter((p) => p.pass_type === "TOUCHDOWN").length,
+    }
+  }).sort((a, b) => b.targets - a.targets)
+  const lead = rows.slice(0, top).map((r) => r.name)
+  const wk = new Map<string, Play[]>()
+  for (const p of plays) if (p.receiver_player_name) {
+    const k = String(p.week ?? "?")
+    wk.set(k, [...(wk.get(k) ?? []), p])
+  }
+  const order = (w: string) => (w.startsWith("post") ? 100 + Number(w.split("-")[1] ?? 0) : Number(w))
+  const weekly = [...wk.entries()].sort((a, b) => order(a[0]) - order(b[0])).map(([week, ps]) => {
+    const row: Record<string, number | string> = { week: week.startsWith("post") ? weekLabel(week) : `W${week}`, n: ps.length }
+    for (const name of lead) row[name] = Math.round((1000 * ps.filter((p) => p.receiver_player_name === name).length) / ps.length) / 10
+    row.Others = Math.round((1000 * ps.filter((p) => !lead.includes(p.receiver_player_name)).length) / ps.length) / 10
+    return row
+  })
+  return { rows, lead, weekly, total }
+}

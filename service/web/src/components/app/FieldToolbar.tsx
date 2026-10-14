@@ -1,4 +1,4 @@
-import { Box, CircleDashed, Clipboard, Download, Flame, Image as ImageIcon, MoveVertical, Spline } from "lucide-react"
+import { Box, CircleDashed, Clipboard, Download, Flame, Image as ImageIcon, MoveUp, MoveVertical, Spline } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import type { LegendSpec } from "@/lib/exportChart"
@@ -7,12 +7,13 @@ import { Toggle } from "@/components/ui/toggle"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import type { Kind } from "@/lib/api"
 import { type ColorBy, DOWN_COLORS, GAIN, OUTCOME, ROUTE_COLORS, ROUTE_LINE } from "@/lib/colors"
+import { COMPARE_A, COMPARE_B, type HeatMetric, METRICS, splitOf, splitsFor, VALUE_RAMP } from "@/lib/heat"
 import type { FieldView } from "./Field"
 
 export type ExportFormat = "png" | "svg" | "clipboard"
 
-export function FieldToolbar({ kind, view, setView, colorBy, setColorBy, heatOf, setHeatOf, threeD, setThreeD, fullDepth, setFullDepth, deeper, onExport,
-  undrawn, showUndrawn, setShowUndrawn }: {
+export function FieldToolbar({ kind, view, setView, colorBy, setColorBy, heatOf, setHeatOf, heatMetric, setHeatMetric, heatSplit, setHeatSplit,
+  yac, setYac, threeD, setThreeD, fullDepth, setFullDepth, deeper, onExport, undrawn, showUndrawn, setShowUndrawn }: {
   kind: Kind
   view: FieldView
   setView: (v: FieldView) => void
@@ -20,6 +21,12 @@ export function FieldToolbar({ kind, view, setView, colorBy, setColorBy, heatOf,
   setColorBy: (c: ColorBy) => void
   heatOf: "end" | "path"
   setHeatOf: (h: "end" | "path") => void
+  heatMetric: HeatMetric
+  setHeatMetric: (m: HeatMetric) => void
+  heatSplit: string
+  setHeatSplit: (s: string) => void
+  yac: boolean
+  setYac: (b: boolean) => void
   threeD: boolean
   setThreeD: (b: boolean) => void
   fullDepth: boolean
@@ -62,12 +69,45 @@ export function FieldToolbar({ kind, view, setView, colorBy, setColorBy, heatOf,
             ))}
           </SelectContent>
         </Select>
-      ) : kind !== "pass" ? (
-        <ToggleGroup type="single" variant="outline" size="sm" value={heatOf} onValueChange={(v) => v && setHeatOf(v as "end" | "path")}>
-          <ToggleGroupItem value="end" className="px-2.5 text-xs">{kind === "route" ? "Catch points" : "End points"}</ToggleGroupItem>
-          <ToggleGroupItem value="path" className="px-2.5 text-xs">Whole paths</ToggleGroupItem>
-        </ToggleGroup>
-      ) : null}
+      ) : (
+        <>
+          <Select value={heatMetric} onValueChange={(v) => setHeatMetric(v as HeatMetric)}>
+            <SelectTrigger size="sm" className="h-8 w-[150px] text-xs" title="What the heatmap shows: where plays go, how well they go there, or a comparison">
+              <span className="text-muted-foreground">Heat:</span>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {METRICS[kind].map(([v, l]) => (
+                <SelectItem key={v} value={v} className="text-xs">{l}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {heatMetric === "compare" && (
+            <Select value={splitOf(kind, heatSplit).key} onValueChange={setHeatSplit}>
+              <SelectTrigger size="sm" className="h-8 w-[196px] text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {splitsFor(kind).map((sp) => (
+                  <SelectItem key={sp.key} value={sp.key} className="text-xs">{sp.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+          {kind !== "pass" && (
+            <ToggleGroup type="single" variant="outline" size="sm" value={heatOf} onValueChange={(v) => v && setHeatOf(v as "end" | "path")}>
+              <ToggleGroupItem value="end" className="px-2.5 text-xs">{kind === "route" ? "Catch points" : "End points"}</ToggleGroupItem>
+              <ToggleGroupItem value="path" className="px-2.5 text-xs">Whole paths</ToggleGroupItem>
+            </ToggleGroup>
+          )}
+        </>
+      )}
+      {kind === "pass" && view === "plays" && (
+        <Toggle variant="outline" size="sm" pressed={yac} onPressedChange={setYac} className="gap-1.5 px-2.5 text-xs"
+          title="Yards after the catch: a line from each completion's catch point to where the play ended (straight downfield - play-by-play has no sideways spot)">
+          <MoveUp className="size-3.5" /> YAC
+        </Toggle>
+      )}
       {(deeper > 0 || fullDepth) && (
         <Toggle variant="outline" size="sm" pressed={fullDepth} onPressedChange={setFullDepth} className="gap-1.5 px-2.5 text-xs"
           title="Show the whole depth of the field">
@@ -107,8 +147,18 @@ export function FieldToolbar({ kind, view, setView, colorBy, setColorBy, heatOf,
 const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1)
 
 /** The legend for a view / colouring: shared by the on-screen legend and the exported image. */
-export function legendSpec(kind: Kind, colorBy: ColorBy, view: FieldView): LegendSpec {
-  if (view === "heat") return { gradient: ["#5b21b6", "#db2777", "#fde047"], lo: "fewer", hi: "more" }
+export function legendSpec(kind: Kind, colorBy: ColorBy, view: FieldView, heat?: { metric: HeatMetric; split: string }): LegendSpec {
+  if (view === "heat") {
+    const m = heat?.metric ?? "volume"
+    if (m === "compare") {
+      const sp = splitOf(kind, heat!.split)
+      return { gradient: [COMPARE_B, "#3f3f46", COMPARE_A], lo: `more ${sp.b}`, hi: `more ${sp.a}` }
+    }
+    if (m === "epa") return { gradient: VALUE_RAMP, lo: "−0.6 EPA", hi: "+0.6 EPA" }
+    if (m === "cpoe") return { gradient: VALUE_RAMP, lo: "−25% CPOE", hi: "+25% CPOE" }
+    if (m === "catch" || m === "success") return { gradient: VALUE_RAMP, lo: `below his ${m} rate`, hi: `above his ${m} rate` }
+    return { gradient: ["#5b21b6", "#db2777", "#fde047"], lo: "fewer", hi: "more" }
+  }
   if (colorBy === "epa") return { gradient: ["#ef4444", "#a1a1aa", "#10b981"], lo: "−3 EPA", hi: "+3 EPA" }
   if (colorBy === "confidence") return { gradient: ["#f59e0b", "#67c7a7", "#22d3ee"], lo: "unsure", hi: "certain" }
   let items: [string, string][]
@@ -120,8 +170,10 @@ export function legendSpec(kind: Kind, colorBy: ColorBy, view: FieldView): Legen
   return { items, dashed: true }
 }
 
-export function Legend({ kind, colorBy, view, undrawn = false }: { kind: Kind; colorBy: ColorBy; view: FieldView; undrawn?: boolean }) {
-  const spec = legendSpec(kind, colorBy, view)
+export function Legend({ kind, colorBy, view, heat, undrawn = false }: {
+  kind: Kind; colorBy: ColorBy; view: FieldView; heat?: { metric: HeatMetric; split: string }; undrawn?: boolean
+}) {
+  const spec = legendSpec(kind, colorBy, view, heat)
   if ("gradient" in spec) return <GradientLegend from={spec.gradient[0]} via={spec.gradient[1]} to={spec.gradient[2]} lo={spec.lo} hi={spec.hi} />
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
