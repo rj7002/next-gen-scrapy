@@ -77,10 +77,11 @@ export function Field(props: Props) {
   // field up by however much the tilt shortened it so no empty band is left above.
   const svgRef = useRef<SVGSVGElement>(null)
   const [svgH, setSvgH] = useState(0)
+  const [svgW, setSvgW] = useState(0)
   useEffect(() => {
     const el = svgRef.current
     if (!el) return
-    const ro = new ResizeObserver(([e]) => setSvgH(e.contentRect.height))
+    const ro = new ResizeObserver(([e]) => (setSvgH(e.contentRect.height), setSvgW(e.contentRect.width)))
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
@@ -185,6 +186,13 @@ export function Field(props: Props) {
   const Y = (y: number) => ymax - y
 
   const heatImg = useMemo(() => (view === "heat" ? heatmap(plays, kind, heatOf, ymin, ymax) : null), [view, plays, kind, heatOf, ymin, ymax])
+  // in 3D the heatmap rises off the field: stacked slices, each lifted by the density it marks
+  const heatStack = useMemo(() => (view === "heat" && threeD ? heatSlices(plays, kind, heatOf, ymin, ymax) : null),
+    [view, threeD, plays, kind, heatOf, ymin, ymax])
+  // the SVG letterboxes its viewBox (max height): the slices sit exactly over the drawn field
+  const fit = Math.min(svgW / W, svgH / (ymax - ymin)) || 0
+  const box = { w: W * fit, h: (ymax - ymin) * fit, x: (svgW - W * fit) / 2, y: (svgH - (ymax - ymin) * fit) / 2 }
+  const peak = 0.12 * box.w
   useImperativeHandle(props.ref, () => ({
     svg: () => svgRef.current,
     heat: () => heatImg ?? heatmap(plays, kind, heatOf, ymin, ymax),
@@ -246,12 +254,13 @@ export function Field(props: Props) {
           transform: threeD
             ? `perspective(${persp}px) translate(${cam.panX}px, ${cam.panY}px) rotateX(${cam.tilt}deg)`
             : `perspective(${persp}px) translate(0px, 0px) rotateX(0deg)`,
-          transformOrigin: "50% 100%", marginTop: -lift,
+          transformOrigin: "50% 100%", marginTop: -lift, transformStyle: "preserve-3d",
         }}
       >
        <div
-        className={cn(!dragging && "transition-transform duration-700 ease-[cubic-bezier(.2,.8,.2,1)]")}
-        style={{ transform: threeD ? `rotate(${cam.yaw}deg) scale(${cam.zoom})` : "rotate(0deg) scale(1)", transformOrigin: "50% 60%" }}
+        className={cn("relative", !dragging && "transition-transform duration-700 ease-[cubic-bezier(.2,.8,.2,1)]")}
+        style={{ transform: threeD ? `rotate(${cam.yaw}deg) scale(${cam.zoom})` : "rotate(0deg) scale(1)", transformOrigin: "50% 60%",
+          transformStyle: "preserve-3d" }}
        >
         <svg ref={svgRef} viewBox={`${XL} 0 ${W} ${H}`} className="block h-auto max-h-[72vh] w-full" onClick={() => onSelect(null)}>
           <defs>
@@ -309,6 +318,15 @@ export function Field(props: Props) {
             ))}
           </g>
         </svg>
+        {heatStack && box.w > 0 && (
+          <div className="pointer-events-none absolute" aria-hidden
+            style={{ left: box.x, top: box.y, width: box.w, height: box.h, transformStyle: "preserve-3d" }}>
+            {heatStack.map((url, i) => (
+              <img key={i} src={url} alt="" draggable={false} className="absolute inset-0 size-full"
+                style={{ transform: `translateZ(${((i + 1) / heatStack.length) * peak}px)` }} />
+            ))}
+          </div>
+        )}
        </div>
       </div>
 
@@ -462,6 +480,64 @@ function PlayHoverCard({ play, kind, x, y }: { play: Play; kind: Kind; x: number
 }
 
 function heatmap(plays: Play[], kind: Kind, heatOf: "end" | "path", ymin: number, ymax: number) {
+  const d = density(plays, kind, heatOf, ymin, ymax)
+  if (!d) return null
+  const { t, nx, ny } = d
+  const canvas = document.createElement("canvas")
+  canvas.width = nx
+  canvas.height = ny
+  const ctx = canvas.getContext("2d")!
+  const img = ctx.createImageData(nx, ny)
+  for (let i = 0; i < t.length; i++) {
+    const [r, g, b] = heat(t[i])
+    img.data[4 * i] = r
+    img.data[4 * i + 1] = g
+    img.data[4 * i + 2] = b
+    img.data[4 * i + 3] = Math.round(255 * Math.min(1, t[i] * 1.6) * 0.92)
+  }
+  ctx.putImageData(img, 0, 0)
+  return { url: canvas.toDataURL(), x: XL, y: 0, w: W, h: ymax - ymin }
+}
+
+/** The 3D heatmap: SLICES images, slice k showing where the density reaches its level, coloured for that level
+ * and soft at its edge - stacked at heights in proportion they make a contoured mound of the density. The faint
+ * spread below FLOOR stays on the flat heatmap underneath, so the field's lines still show through. */
+const SLICES = 36
+const FLOOR = 0.14
+function heatSlices(plays: Play[], kind: Kind, heatOf: "end" | "path", ymin: number, ymax: number): string[] | null {
+  const d = density(plays, kind, heatOf, ymin, ymax)
+  if (!d) return null
+  const { t, nx, ny } = d
+  const canvas = document.createElement("canvas")
+  canvas.width = nx
+  canvas.height = ny
+  const ctx = canvas.getContext("2d")!
+  const out: string[] = []
+  for (let k = 1; k <= SLICES; k++) {
+    const level = FLOOR + ((1 - FLOOR) * k) / SLICES
+    const [r, g, b] = heat(level)
+    const shade = 0.72 + 0.28 * level              // lower slices a touch darker: reads as depth from the side
+    const opacity = 0.5 + 0.45 * (k / SLICES)      // and the lower ones partly see-through
+    const img = ctx.createImageData(nx, ny)
+    let any = false
+    for (let i = 0; i < t.length; i++) {
+      const a = Math.min(1, Math.max(0, ((t[i] - level) * SLICES) / (1 - FLOOR) + 0.5))
+      if (a <= 0) continue
+      any = true
+      img.data[4 * i] = r * shade
+      img.data[4 * i + 1] = g * shade
+      img.data[4 * i + 2] = b * shade
+      img.data[4 * i + 3] = Math.round(255 * a * opacity)
+    }
+    if (!any) break
+    ctx.putImageData(img, 0, 0)
+    out.push(canvas.toDataURL())
+  }
+  return out
+}
+
+/** Smoothed density of the plays' end points (or whole paths) on a half-yard grid, scaled 0-1. */
+function density(plays: Play[], kind: Kind, heatOf: "end" | "path", ymin: number, ymax: number) {
   const res = 0.5
   const nx = Math.round(W / res)
   const ny = Math.round((ymax - ymin) / res)
@@ -497,19 +573,7 @@ function heatmap(plays: Play[], kind: Kind, heatOf: "end" | "path", ymin: number
   let max = 0
   for (const v of grid) max = Math.max(max, v)
   if (max <= 0) return null
-  const canvas = document.createElement("canvas")
-  canvas.width = nx
-  canvas.height = ny
-  const ctx = canvas.getContext("2d")!
-  const img = ctx.createImageData(nx, ny)
-  for (let i = 0; i < grid.length; i++) {
-    const t = Math.pow(grid[i] / max, 0.65)
-    const [r, g, b] = heat(t)
-    img.data[4 * i] = r
-    img.data[4 * i + 1] = g
-    img.data[4 * i + 2] = b
-    img.data[4 * i + 3] = Math.round(255 * Math.min(1, t * 1.6) * 0.92)
-  }
-  ctx.putImageData(img, 0, 0)
-  return { url: canvas.toDataURL(), x: XL, y: 0, w: W, h: ymax - ymin }
+  const t = new Float32Array(grid.length)
+  for (let i = 0; i < grid.length; i++) t[i] = Math.pow(grid[i] / max, 0.65)
+  return { t, nx, ny }
 }
