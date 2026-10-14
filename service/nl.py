@@ -201,6 +201,7 @@ class RuleParser:
         self.players_full()
         self.teams()
         self.route_names()
+        self.after_catch()
         self.dataset_words()
         self.seasons_weeks()
         self.clock()
@@ -501,6 +502,17 @@ class RuleParser:
             self.deferred.append(("explosive", None))
             return "Explosive play"
         self.rule(r"\b(?:explosive|big|chunk|huge)(?: plays?| runs?| gains?| catches| passes| completions)?\b", explosive)
+
+    def after_catch(self):
+        """Yards after the catch - ahead of the "big play" and plain "N yards" rules, which would take its words."""
+        cmp = [(r"(?:at least|over|more than|>=?|above)", "gte"), (r"(?:under|less than|fewer than|<=?|below)", "lte")]
+        yac = r"(?:yac|yards? after (?:the )?catch|after the catch)"
+        for word, op in cmp + [("", "gte")]:
+            self.rule(rf"(?<![a-z]){word}\s*{NUM}\s*(?:\+|or more)?\s*(?:yards?|yds)?\s*(?:of\s+)?{yac}\b",
+                      lambda m, op=op: self.set("yards_after_catch", op, float(m.group(1))))
+        self.rule(rf"\b(?:big|lots of|a lot of|tons of|chunk|plenty of) {yac}\b|\byac (?:plays|catches|monsters?)\b",
+                  lambda m: self.set("yards_after_catch", "gte", 10))
+        self.rule(rf"\b(?:no|zero) {yac}\b", lambda m: self.set("yards_after_catch", "lte", 0))
 
     def yardage(self):
         cmp = [(r"(?:at least|over|more than|>=?|above)", "gte"), (r"(?:under|less than|fewer than|<=?|below)", "lte")]

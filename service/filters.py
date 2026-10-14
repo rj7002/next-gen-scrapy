@@ -94,6 +94,7 @@ FILTERS = [
     F("gain_class", "Gain", "Result", "choice", tables=("carries",),
       choices=[["LONG", "5+ yds"], ["SHORT", "0-5 yds"], ["LOSS", "Loss"]]),
     F("yards_gained", "Yards gained", "Result", "range"),
+    F("yards_after_catch", "Yards after catch", "Result", "range", tables=PASSING, help="completions only"),
     F("epa", "EPA", "Result", "range", step=0.1),
     F("success", "Successful play", "Result", "bool", help="positive EPA"),
     F("first_down", "Gained first down", "Result", "bool"),
