@@ -194,6 +194,11 @@ export default function App() {
       const kind = sel?.kind ?? "pass"
       // with the in-browser model loaded it reads the leftover words; otherwise the server does (Gemini, if set up)
       let r = await api.ask(q, kind, season, job?.id, modelStatus().state === "ready" ? "client" : "server")
+      if (r.refused) {
+        // another player named while this chart is open: say so and leave the chart as it is
+        toast.error("Stayed on this chart", { description: r.refused })
+        return
+      }
       if (r.llm_prompt && r.llm_schema) {
         // words the rules couldn't place: the in-browser model reads them (if it's loaded), the server validates
         const answer = await answerJSON(r.llm_prompt, r.llm_schema, r.llm_messages, r.llm_ft).catch(() => null)

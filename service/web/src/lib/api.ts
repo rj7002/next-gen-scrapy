@@ -91,6 +91,7 @@ export interface AskResult {
   ignored: string[]
   notes: string[]
   engine: string
+  refused?: string | null
   llm_prompt?: string | null
   llm_schema?: object | null
   llm_messages?: { role: string; content: string }[] | null

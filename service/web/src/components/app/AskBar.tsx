@@ -4,7 +4,7 @@ import { type ModelStatus, modelStatus, onModelStatus, preload } from "@/lib/llm
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "@/components/ui/input-group"
 
 const HINTS: Record<string, string[]> = {
-  pass: ["3rd down throws under pressure", "deep passes vs zone in the 4th quarter", "play action in the red zone"],
+  pass: ["3rd down throws under pressure", "deep passes vs zone in the 4th quarter", "throws to tight ends in the red zone"],
   route: ["targets on 3rd and long", "deep routes vs man coverage", "red zone targets"],
   carry: ["runs to the right on 1st down", "carries in the red zone", "shotgun runs with 8 in the box"],
 }

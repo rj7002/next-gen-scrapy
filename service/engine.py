@@ -479,6 +479,18 @@ def _route_tree(kind: str, matched: pd.DataFrame, guesses, season: int | None) -
     return out
 
 
+def _receiver_positions(matched: pd.DataFrame) -> list[str | None]:
+    """Each pass's target's position (WR / TE / RB / FB), for "throws to tight ends" on a quarterback's chart."""
+    if not len(matched) or "receiver_player_id" not in matched:
+        return [None] * len(matched)
+    try:
+        pos = _people_table()["position"]
+    except Exception:   # the players table is a download; without it the filter just has nothing to offer
+        return [None] * len(matched)
+    out = matched["receiver_player_id"].map(pos).replace({"HB": "RB"})
+    return [v if isinstance(v, str) and v in ("WR", "TE", "RB", "FB") else None for v in out]
+
+
 def _plays_json(kind: str, matched: pd.DataFrame, chart_df: pd.DataFrame, season: int | None = None) -> list[dict]:
     filt_cols = [f["col"] for f in for_table(TABLE[kind])]
     cols = list(dict.fromkeys(CORE + EXTRA[kind] + filt_cols))
@@ -496,6 +508,7 @@ def _plays_json(kind: str, matched: pd.DataFrame, chart_df: pd.DataFrame, season
         pred = [None if not np.isfinite(r).all() else sorted(zip(RT.CLASSES, r.round(3).tolist()), key=lambda t: -t[1])[:4]
                 for r in P]
     tree = _route_tree(kind, matched, pred, season) if kind in ("pass", "route") and len(matched) else None
+    rpos = _receiver_positions(matched) if kind == "pass" else None
     for i, (_, r) in enumerate(matched.iterrows()):
         d = {"id": f"{r.get('game_id')}:{r.get('play_id')}", "matched": True}
         for c in cols:
@@ -513,6 +526,8 @@ def _plays_json(kind: str, matched: pd.DataFrame, chart_df: pd.DataFrame, season
             d["route_guess"] = pred[i]
         if tree is not None and tree[i][0]:
             d["tree_route"], d["tree_route_src"] = tree[i]
+        if rpos is not None and rpos[i]:
+            d["receiver_position"] = rpos[i]
         out.append(d)
     # chart lines / dots the matcher couldn't place - still drawn, flagged unmatched
     out += _unmatched(kind, matched, chart_df, no_fit)

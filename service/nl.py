@@ -80,6 +80,7 @@ class Parse:
     ignored: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     engine: str = "rules"
+    refused: str | None = None         # the question asks for something this chart can't show (another player's chart)
     llm_prompt: str | None = None      # llm="client": what the visitor's in-browser model should answer
     llm_schema: dict | None = None     # ...and the JSON shape its answer is held to
     llm_messages: list | None = None   # ...or as chat messages: system prompt, worked examples, the question
@@ -196,6 +197,7 @@ class RuleParser:
 
     # ---------- the rules ----------
     def run(self) -> Parse:
+        self.receivers()
         self.players_full()
         self.teams()
         self.dataset_words()
@@ -217,6 +219,35 @@ class RuleParser:
         self.validate()
         self.leftovers()
         return self.p
+
+    def receivers(self):
+        """On a quarterback's pass chart a name is who the ball went to - a filter on his throws, not another
+        player's chart. Names are the pbp's ("G.Kittle"), matched by last name, and by first name when one is given."""
+        chart = self.dyn.get("chart")
+        if not chart or chart["table"] != "passes":
+            return
+        for abbr in sorted(self.dyn.get("choices", {}).get("receiver_player_name", ()), key=len, reverse=True):
+            first, _, last = abbr.partition(".")
+            words = [w for w in re.findall(r"[a-z]+", last.lower()) if w not in ("jr", "sr", "ii", "iii", "iv")]
+            if not words or len("".join(words)) < 3 or "".join(words) in STOPWORDS:
+                continue
+            first = re.sub(r"[^a-z]", "", first.lower())
+            last_rx = r"[.\s'\-]*".join(re.escape(w) for w in words) + r"(?:'s|s)?"
+
+            def full(m, abbr=abbr, first=first):
+                if not re.sub(r"[^a-z]", "", m.group(1)).startswith(first):
+                    return False
+                return self.set("receiver_player_name", "eq", abbr)
+
+            def only_last(m, abbr=abbr, first=first):
+                before = re.findall(r"[a-z'.\-]+", self.t[:m.start()])
+                given = re.sub(r"[^a-z]", "", before[-1]) if before else ""
+                if given in self.players.by_first and not given.startswith(first):
+                    return False          # "Brian Robinson" isn't "D.Robinson"
+                return self.set("receiver_player_name", "eq", abbr)
+
+            self.rule(rf"\b([a-z][a-z'.\-]+)\s+{last_rx}\b", full)
+            self.rule(rf"\b{last_rx}\b", only_last)
 
     def players_full(self):
         alpha = re.sub(r"[.'\-]", "", self.t)
@@ -631,7 +662,7 @@ class RuleParser:
                 self.set("run_location" if ds == "carries" else "pass_location", "in", value)
 
     def validate(self):
-        _validate(self.p, self.current)
+        _validate(self.p, self.current, self.dyn)
 
     def leftovers(self):
         words = []
@@ -648,8 +679,23 @@ BUCKETS = {"passes": {"COMPLETE", "INCOMPLETE", "TOUCHDOWN", "INTERCEPTION"},
            "carries": {"TOUCHDOWN", "OTHER"}}
 
 
-def _validate(p: Parse, current: str):
+def _validate(p: Parse, current: str, dyn: dict | None = None):
     """Drop anything the chosen dataset can't filter on, with a note instead of a silent drop."""
+    chart = (dyn or {}).get("chart")
+    if chart:
+        # with a player's chart open, the question is about that chart: no other player's, no other kind
+        if p.name and _norm_name(p.name) != _norm_name(chart["name"]):
+            p.refused = (f"{p.name} isn't one of {chart['name']}'s receivers." if chart["table"] == "passes"
+                         else f"This is {chart['name']}'s chart.") + " Use search to switch players."
+            p.name = None
+        p.dataset = chart["table"]
+        pos = p.params.pop("position__in", None) or p.params.pop("position", None)
+        if pos and chart["table"] == "passes":
+            # pass charts are one quarterback's throws: a position means who they went to
+            vals = list(dict.fromkeys({"HB": "RB"}.get(v, v) for v in pos.split(",")))
+            vals = [v for v in vals if v in ("WR", "TE", "RB", "FB")]
+            if vals:
+                p.params["receiver_position__in"] = ",".join(vals)
     ds = p.dataset = p.dataset or current
     pos = p.params.get("position__in", p.params.get("position", ""))
     if ds == "passes" and pos and "QB" not in pos.split(","):
@@ -996,16 +1042,21 @@ def ft_messages(query: str, p: Parse) -> list[dict]:
                                         f"applied: {json.dumps(p.params, sort_keys=True)}\nleftover: {json.dumps(p.ignored)}"}]
 
 
+NAMED = {"receiver_player_name"}   # set from names the rules matched exactly; a model neither adds nor removes them
+
+
 def _apply_small(p: Parse, out: dict, dyn: dict):
     """A small model's {add, remove} on top of the rules' draft, every filter validated like Gemini's."""
     changed = []
     for col in out.get("remove") or []:
+        if col in NAMED:
+            continue
         for k in [k for k in p.params if k.split("__")[0] == col]:
             changed.append("removed " + describe(col, (k.split("__") + ["eq"])[1], p.params.pop(k)))
     for item in out.get("add") or []:
         col, op, value = item.get("column"), item.get("op", "eq"), item.get("value")
         f = BY_COL.get(col)
-        if not f or op not in OP_SUFFIX:
+        if not f or op not in OP_SUFFIX or col in NAMED:
             continue
         try:
             v = _coerce(f, op, value, dyn)
@@ -1056,10 +1107,10 @@ def llm_schema() -> dict:
 def refine(query: str, players: Players, current_dataset: str, dyn: dict, out: dict) -> Parse:
     """The rules' parse with an in-browser model's answer to its prompt applied - validated exactly like Gemini's."""
     p = parse_rules(query, players, current_dataset, dyn)
-    if not p.ignored:
+    if not p.ignored or p.refused:
         return p
     _apply_small(p, out if isinstance(out, dict) else {}, dyn)
-    _validate(p, current_dataset)
+    _validate(p, current_dataset, dyn)
     p.ignored = []
     p.engine = "rules + local model"
     return p
@@ -1071,7 +1122,7 @@ def parse(query: str, players: Players, current_dataset: str, dyn: dict, llm: st
     from . import gemini
 
     p = parse_rules(query, players, current_dataset, dyn)
-    if not p.ignored:
+    if not p.ignored or p.refused:
         return p
     if llm == "client":
         p.llm_prompt, p.llm_schema = small_prompt(query, p)
@@ -1086,7 +1137,7 @@ def parse(query: str, players: Players, current_dataset: str, dyn: dict, llm: st
         p.notes.append("Some words weren't understood: " + ", ".join(p.ignored))
         return p
     _apply_llm(p, out, players, dyn)
-    _validate(p, current_dataset)
+    _validate(p, current_dataset, dyn)
     p.ignored = []
     p.engine = "rules + Gemini"
     return p

@@ -53,6 +53,9 @@ FILTERS = [
 
     # Passing
     F("air_yards", "Air yards", "Passing", "range", tables=PASSING, help="20+ = deep"),
+    F("receiver_player_name", "Thrown to", "Passing", "select", tables=("passes",)),
+    F("receiver_position", "Target's position", "Passing", "choice", tables=("passes",),
+      choices=[["WR", "WR"], ["TE", "TE"], ["RB", "RB"], ["FB", "FB"]]),
     F("pass_length", "Pass length", "Passing", "choice", tables=PASSING,
       choices=[["short", "Short"], ["deep", "Deep"]]),
     F("pass_location", "Pass direction", "Passing", "choice", tables=PASSING,

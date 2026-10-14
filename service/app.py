@@ -235,7 +235,10 @@ def _ask_context(kind, season, job):
         for f in for_table(engine.TABLE[j.kind]):
             if f["kind"] in ("choice", "select") and not f["choices"] and f["col"] in j.frame:
                 choices[f["col"]] = {v for v in j.frame[f["col"]].dropna().unique().tolist() if v != ""}
-    return season, nl.Players(rows), {"positions": set(), "choices": choices}
+    dyn = {"positions": set(), "choices": choices}
+    if j is not None:   # a player's chart is open: questions filter it, they don't switch to someone else's
+        dyn["chart"] = {"name": j.name, "table": engine.TABLE[j.kind]}
+    return season, nl.Players(rows), dyn
 
 
 def _with_player(parsed: dict, season: int) -> dict:
