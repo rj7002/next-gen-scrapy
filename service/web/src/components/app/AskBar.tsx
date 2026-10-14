@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
-import { ArrowUp, Loader2, Sparkles } from "lucide-react"
+import { ArrowUp, Cpu, Loader2, Sparkles } from "lucide-react"
+import { type ModelStatus, modelStatus, onModelStatus, preload } from "@/lib/llm"
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "@/components/ui/input-group"
 
 const HINTS: Record<string, string[]> = {
@@ -15,6 +16,8 @@ export function AskBar({ kind, busy, onAsk }: { kind: string; busy: boolean; onA
     const t = setInterval(() => setHint((h) => h + 1), 3500)
     return () => clearInterval(t)
   }, [])
+  const [ai, setAi] = useState<ModelStatus>(modelStatus)
+  useEffect(() => onModelStatus(setAi), [])
   const hints = HINTS[kind] ?? HINTS.pass
   const submit = () => q.trim() && onAsk(q.trim())
   return (
@@ -23,8 +26,16 @@ export function AskBar({ kind, busy, onAsk }: { kind: string; busy: boolean; onA
         <Sparkles className="size-4 text-emerald-700 dark:text-emerald-300" />
       </InputGroupAddon>
       <InputGroupInput value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()}
+        onFocus={() => preload()}
         placeholder={`Ask: “${hints[hint % hints.length]}”`} className="text-sm" />
       <InputGroupAddon align="inline-end">
+        {(ai.state === "loading" || ai.state === "ready") && (
+          <span className="hidden items-center gap-1 text-[10px] text-muted-foreground sm:inline-flex"
+            title={ai.state === "ready" ? "An AI model in your browser reads words the built-in rules don't know"
+              : "Loading the in-browser AI model - until then, the built-in rules answer"}>
+            <Cpu className="size-3" />{ai.state === "ready" ? "AI on" : `AI ${Math.round(100 * ai.progress)}%`}
+          </span>
+        )}
         <InputGroupButton size="icon-xs" variant="default" className="rounded-lg" onClick={submit} disabled={busy || !q.trim()} aria-label="Ask">
           {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ArrowUp className="size-3.5" />}
         </InputGroupButton>

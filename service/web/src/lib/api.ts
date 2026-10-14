@@ -91,6 +91,10 @@ export interface AskResult {
   ignored: string[]
   notes: string[]
   engine: string
+  llm_prompt?: string | null
+  llm_schema?: object | null
+  llm_messages?: { role: string; content: string }[] | null
+  llm_ft?: { role: string; content: string }[] | null
 }
 
 async function json<T>(r: Response): Promise<T> {
@@ -127,10 +131,17 @@ export const api = {
   job: (id: string) => apiFetch(`/api/jobs/${id}`).then(json<Job>),
   data: (id: string) => apiFetch(`/api/data/${id}`).then(json<Dataset>),
   filters: (kind: Kind) => apiFetch(`/api/filters?kind=${kind}`).then(json<{ groups: string[]; filters: FilterSpec[] }>),
-  ask: (q: string, kind: Kind, season: number, job?: string) =>
-    apiFetch(`/api/ask?${new URLSearchParams({ q, kind, season: String(season), ...(job ? { job } : {}) })}`).then(
+  // llm="client": words the rules can't place come back as a prompt for the in-browser model (lib/llm.ts), whose
+  // answer goes to refine(); "server" asks Gemini instead
+  ask: (q: string, kind: Kind, season: number, job?: string, llm: "client" | "server" = "client") =>
+    apiFetch(`/api/ask?${new URLSearchParams({ q, kind, season: String(season), llm, ...(job ? { job } : {}) })}`).then(
       json<AskResult>
     ),
+  refine: (q: string, kind: Kind, season: number, answer: Record<string, unknown>, job?: string) =>
+    apiFetch("/api/ask/refine", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ q, kind, season, answer, ...(job ? { job } : {}) }),
+    }).then(json<AskResult>),
   play: (job: string, id: string) => apiFetch(`/api/play/${job}/${encodeURIComponent(id)}`).then(json<PlayDetailData>),
   exportUrl: (id: string) => `/api/export/${id}`,
 }

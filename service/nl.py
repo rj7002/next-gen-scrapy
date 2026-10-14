@@ -80,6 +80,10 @@ class Parse:
     ignored: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     engine: str = "rules"
+    llm_prompt: str | None = None      # llm="client": what the visitor's in-browser model should answer
+    llm_schema: dict | None = None     # ...and the JSON shape its answer is held to
+    llm_messages: list | None = None   # ...or as chat messages: system prompt, worked examples, the question
+    llm_ft: list | None = None         # ...and in the fine-tuned model's own compact format
 
     def as_dict(self):
         return self.__dict__.copy()
@@ -265,6 +269,8 @@ class RuleParser:
                   lambda m: (self.want("carries"), self.set("qb_scramble", "eq", "true"))[1])
         self.rule(r"\bdesigned (?:qb |quarterback )?runs?\b",
                   lambda m: (self.want("carries"), self.set("qb_scramble", "eq", "false"))[1])
+        # "throws on the run" is a passer on the move, not a carry
+        self.rule(r"\bon the run\b", lambda m: self.set("is_qb_out_of_pocket", "eq", "true"))
         # "runs for a loss" / "5-man rush" belong to later rules - leave those words for them
         self.rule(r"\b(?:carries|carry|runs(?! for (?:a )?loss)|run(?![ -](?:pass|option|gap|direction|location|game|for))|"
                   r"run plays?|(?<!man )(?<!man-)(?:rushes|rushing(?: attempts| plays)?|rush attempts?))\b",
@@ -857,12 +863,221 @@ def _apply_llm(p: Parse, out: dict, players: Players, dyn: dict):
         p.understood.append({"text": "Gemini", "meaning": c})
 
 
-def parse(query: str, players: Players, current_dataset: str, dyn: dict) -> Parse:
-    """Rules first; Gemini only for whatever the rules left over."""
+# a small model can't choose from all ~70 filters: it gets the ones the leftover words name, plus these, which most
+# football phrasing ("late", "up big", "third and forever", "garbage time") comes down to
+SMALL_FULL_MENU = True
+_SITUATION = ["down", "ydstogo", "qtr", "score_differential", "yardline_100", "half_seconds_remaining", "wp"]
+
+
+def _small_candidates(p: Parse, dataset: str) -> list[dict]:
+    allowed = [f for f in for_table(dataset)]
+    words = {w.lower().strip(".,'") for w in p.ignored} | set(re.findall(r"[a-z]+", " ".join(p.ignored).lower()))
+    words = {w for w in words if len(w) > 2}
+
+    def score(f):
+        text = " ".join([f["col"].replace("_", " "), f["label"], f.get("help") or "",
+                         " ".join(str(lab) for _, lab in (f["choices"] or []))]).lower()
+        return sum(w in text or (len(w) > 4 and w[:5] in text) for w in words)
+    if SMALL_FULL_MENU:                       # a 7B model handles the whole menu (~40 lines) better than a guess at it
+        return [f for f in allowed if f["col"] not in ("location_prob", "n_candidates", "start_ok", "handoff_ok", "gap")]
+    hits = sorted((f for f in allowed if score(f) > 0), key=lambda f: -score(f))[:8]
+    keep = {f["col"] for f in hits} | set(_SITUATION) | {k.split("__")[0] for k in p.params}
+    return [f for f in allowed if f["col"] in keep]
+
+
+def small_prompt(query: str, p: Parse) -> tuple[str, dict]:
+    """A short prompt and schema for a small in-browser model: only the leftover words, the draft, and a handful of
+    candidate filters - it adds or removes filters, nothing else."""
+    ds = p.dataset or "passes"
+    cands = _small_candidates(p, ds)
+    lines = []
+    for f in cands:
+        if f["choices"]:
+            vals = "one of " + ", ".join(f"{v} ({lab})" for v, lab in f["choices"])
+        elif f["kind"] == "bool":
+            vals = "true/false"
+        elif f["kind"] == "range":
+            vals = "a number" + (f" - {f['help']}" if f.get("help") else "")
+        else:
+            vals = "text"
+        lines.append(f"- {f['col']}: {f['label']} ({vals})")
+    draft = [describe(k.split("__")[0], (k.split("__") + ["eq"])[1], v) for k, v in p.params.items()] or ["(none)"]
+    prompt = f"""You turn football words into database filters for {ds} (NFL plays). A parser already understood part of the question.
+
+Question: {json.dumps(query)}
+Already applied: {"; ".join(draft)}
+Words it did NOT understand: {json.dumps(p.ignored)}
+
+Filters you can use:
+{chr(10).join(lines)}
+
+Return JSON: "add" = filters that express the words it did not understand (column, op, value; op is eq, in, gte, lte, gt or lt),
+"remove" = columns of applied filters those words show are wrong, "unsupported" = words no filter can express.
+Football meanings: late / late in the game = qtr 4; close game = score_differential between -8 and 8; up big / blowout lead = score_differential >= 17; trailing = score_differential < 0; stacked box = n_defense_box >= 8; light box = n_defense_box <= 6; third and forever / long = ydstogo >= 10; deep = air_yards >= 20; short = air_yards <= 9; behind the line = air_yards < 0.
+Only add filters for the words it did not understand. If none fit, return empty "add"."""
+    cols = sorted({f["col"] for f in cands})
+    value = {"anyOf": [{"type": "string"}, {"type": "number"}, {"type": "boolean"},
+                       {"type": "array", "items": {"anyOf": [{"type": "string"}, {"type": "number"}]}}]}
+    schema = {"type": "object", "properties": {
+        "add": {"type": "array", "items": {"type": "object", "properties": {
+            "column": {"type": "string", "enum": cols}, "op": {"type": "string", "enum": ["eq", "in", "gte", "lte", "gt", "lt"]},
+            "value": value}, "required": ["column", "op", "value"]}},
+        "remove": {"type": "array", "items": {"type": "string", "enum": sorted({k.split("__")[0] for k in p.params}) or ["none"]}},
+        "unsupported": {"type": "string"}}, "required": ["add"]}
+    return prompt, schema
+
+
+SMALL_SYSTEM = """You map leftover words in a football question to database filters. A rule parser already applied some
+filters; you only handle the words it did NOT understand. Reply with one JSON object: {"add": [...], "remove": [...],
+"unsupported": "..."}. "add": filters for the leftover words, each {"column", "op", "value"} using ONLY the listed
+columns. "remove": columns of applied filters that the leftover words show are wrong. "unsupported": leftover words no
+listed filter can express. Filler words (out, of, when, the, they, were) need no filter. Keep every applied filter that is
+right. Never invent seasons, weeks, players or teams."""
+
+# worked examples (none of them in the evaluation set): question, applied filters, leftover words, candidates, answer
+SMALL_EXAMPLES = [
+    ("runs when the box is loaded", [], ["box", "loaded"], ["n_defense_box", "down", "qtr", "score_differential"],
+     {"add": [{"column": "n_defense_box", "op": "gte", "value": 8}], "remove": [], "unsupported": ""}),
+    ("targets late in a tie game", [], ["late", "tie"], ["qtr", "score_differential", "half_seconds_remaining"],
+     {"add": [{"column": "qtr", "op": "in", "value": [4]}, {"column": "score_differential", "op": "eq", "value": 0}], "remove": [], "unsupported": ""}),
+    ("carries when they were down big", ["Yards gained ≥ 10"], ["down"], ["yards_gained", "score_differential", "down", "qtr"],
+     {"add": [{"column": "score_differential", "op": "lte", "value": -17}], "remove": ["yards_gained"], "unsupported": ""}),
+    ("throws when the pocket collapsed", [], ["pocket", "collapsed"], ["was_pressure", "is_qb_out_of_pocket", "n_pass_rushers"],
+     {"add": [{"column": "was_pressure", "op": "eq", "value": True}], "remove": [], "unsupported": ""}),
+    ("deep balls into double coverage", ["Air yards ≥ 20"], ["double"], ["is_contested_ball", "defense_coverage_type", "air_yards"],
+     {"add": [{"column": "is_contested_ball", "op": "eq", "value": True}], "remove": [], "unsupported": ""}),
+    ("passes on the opening drive", [], ["opening", "drive"], ["qtr", "half_seconds_remaining", "down"],
+     {"add": [], "remove": [], "unsupported": "opening drive"}),
+    ("runs out of shotgun on second and long", ["Shotgun: yes", "Down: 2nd", "Yards to go ≥ 7"], ["out"], ["shotgun", "down", "ydstogo"],
+     {"add": [], "remove": [], "unsupported": ""}),
+    ("short throws in the second half", ["Quarter: Q3, Q4"], ["short"], ["air_yards", "qtr", "pass_length"],
+     {"add": [{"column": "air_yards", "op": "lte", "value": 9}], "remove": [], "unsupported": ""}),
+]
+
+
+def _small_user(query: str, draft: list[str], ignored: list[str], cand_lines: list[str]) -> str:
+    return (f"Question: {json.dumps(query)}\nApplied: {'; '.join(draft) or '(none)'}\nLeftover words: {json.dumps(ignored)}\n"
+            f"Columns:\n" + "\n".join(cand_lines))
+
+
+def _cand_line(f: dict) -> str:
+    if f["choices"]:
+        vals = "one of " + ", ".join(f"{v} ({lab})" for v, lab in f["choices"])
+    elif f["kind"] == "bool":
+        vals = "true/false"
+    elif f["kind"] == "range":
+        vals = "number" + (f" - {f['help']}" if f.get("help") else "")
+    else:
+        vals = "text"
+    return f"- {f['col']}: {f['label']} ({vals})"
+
+
+def small_messages(query: str, p: Parse) -> list[dict]:
+    """System prompt + worked examples + this question, as chat messages for a small model."""
+    msgs = [{"role": "system", "content": SMALL_SYSTEM}]
+    for q, draft, ign, cols, ans in SMALL_EXAMPLES:
+        lines = [_cand_line(BY_COL[c]) for c in cols if c in BY_COL]
+        msgs.append({"role": "user", "content": _small_user(q, draft, ign, lines)})
+        msgs.append({"role": "assistant", "content": json.dumps(ans)})
+    ds = p.dataset or "passes"
+    draft = [describe(k.split("__")[0], (k.split("__") + ["eq"])[1], v) for k, v in p.params.items()]
+    msgs.append({"role": "user", "content": _small_user(query, draft, p.ignored, [_cand_line(f) for f in _small_candidates(p, ds)])})
+    return msgs
+
+
+FT_SYSTEM = ("Map leftover words of an NFL play question to filters. Reply with JSON "
+             '{"add": [{"column", "op", "value"}], "remove": [columns], "unsupported": "words no filter can express"}.')
+
+
+def ft_messages(query: str, p: Parse) -> list[dict]:
+    """The compact prompt the fine-tuned Ask-bar model was trained on (it knows the filters; no menu needed)."""
+    return [{"role": "system", "content": FT_SYSTEM},
+            {"role": "user", "content": f"dataset: {p.dataset or 'passes'}\nquestion: {query}\n"
+                                        f"applied: {json.dumps(p.params, sort_keys=True)}\nleftover: {json.dumps(p.ignored)}"}]
+
+
+def _apply_small(p: Parse, out: dict, dyn: dict):
+    """A small model's {add, remove} on top of the rules' draft, every filter validated like Gemini's."""
+    changed = []
+    for col in out.get("remove") or []:
+        for k in [k for k in p.params if k.split("__")[0] == col]:
+            changed.append("removed " + describe(col, (k.split("__") + ["eq"])[1], p.params.pop(k)))
+    for item in out.get("add") or []:
+        col, op, value = item.get("column"), item.get("op", "eq"), item.get("value")
+        f = BY_COL.get(col)
+        if not f or op not in OP_SUFFIX:
+            continue
+        try:
+            v = _coerce(f, op, value, dyn)
+        except (ValueError, TypeError):
+            continue
+        if f["kind"] == "choice" and op == "eq":
+            op = "in"
+        elif op == "in" and f["kind"] != "choice":
+            op = "eq"
+        if op in ("eq", "in"):
+            for k in [k for k in p.params if k.split("__")[0] == col]:
+                del p.params[k]
+        p.params[col + OP_SUFFIX[op]] = v
+        changed.append(describe(col, op, v))
+    if out.get("unsupported"):
+        p.notes.append(f"Couldn't express: {out['unsupported']}")
+    for c in changed:
+        p.understood.append({"text": "AI", "meaning": c})
+
+
+def llm_schema() -> dict:
+    """JSON schema for a model's answer to _prompt: the same shape, with column / op held to the curated lists so a
+    small model's constrained decoding can't produce anything _apply_llm would have to throw away."""
+    cols = sorted(set(BY_COL) | {"defteam"})
+    value = {"anyOf": [{"type": "string"}, {"type": "number"}, {"type": "boolean"},
+                       {"type": "array", "items": {"anyOf": [{"type": "string"}, {"type": "number"}]}}]}
+    return {
+        "type": "object",
+        "properties": {
+            "dataset": {"type": "string", "enum": list(DATASETS)},
+            "seasons": {"type": "array", "items": {"type": "integer"}},
+            "all_seasons": {"type": "boolean"},
+            "weeks": {"type": "array", "items": {"type": "integer"}},
+            "team": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "opponent": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "player": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "filters": {"type": "array", "items": {
+                "type": "object",
+                "properties": {"column": {"type": "string", "enum": cols},
+                               "op": {"type": "string", "enum": list(OP_SUFFIX)}, "value": value},
+                "required": ["column", "op", "value"]}},
+            "unsupported": {"type": "string"},
+        },
+        "required": ["dataset", "filters"],
+    }
+
+
+def refine(query: str, players: Players, current_dataset: str, dyn: dict, out: dict) -> Parse:
+    """The rules' parse with an in-browser model's answer to its prompt applied - validated exactly like Gemini's."""
+    p = parse_rules(query, players, current_dataset, dyn)
+    if not p.ignored:
+        return p
+    _apply_small(p, out if isinstance(out, dict) else {}, dyn)
+    _validate(p, current_dataset)
+    p.ignored = []
+    p.engine = "rules + local model"
+    return p
+
+
+def parse(query: str, players: Players, current_dataset: str, dyn: dict, llm: str = "server") -> Parse:
+    """Rules first; for whatever the rules left over, Gemini (llm="server") - or, with llm="client", the prompt and
+    schema for the visitor's in-browser model, whose answer comes back through refine()."""
     from . import gemini
 
     p = parse_rules(query, players, current_dataset, dyn)
     if not p.ignored:
+        return p
+    if llm == "client":
+        p.llm_prompt, p.llm_schema = small_prompt(query, p)
+        p.llm_messages = small_messages(query, p)
+        p.llm_ft = ft_messages(query, p)
+        p.engine = "rules (in-browser model to refine)"
         return p
     try:
         out = gemini.ask(_prompt(query, p, players.seasons, dyn))

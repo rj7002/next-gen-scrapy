@@ -29,7 +29,7 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import engine, nl
 from .filters import GROUPS, for_table
@@ -223,11 +223,7 @@ def filters(kind: Kind = "pass"):
     return {"groups": GROUPS, "filters": for_table(table)}
 
 
-@app.get("/api/ask")
-def ask(q: str = Query(..., min_length=1, max_length=300), kind: Kind = "pass", season: int | None = None,
-        job: str | None = None):
-    """Plain-English question -> filters (+ player / season / chart kind when the question names them). Rules
-    first; Gemini (GEMINI_API_KEY) only for words the rules couldn't place, validated against the filter list."""
+def _ask_context(kind, season, job):
     season = season or engine.current_season()
     rows = []
     for k in engine.KINDS:
@@ -239,11 +235,39 @@ def ask(q: str = Query(..., min_length=1, max_length=300), kind: Kind = "pass", 
         for f in for_table(engine.TABLE[j.kind]):
             if f["kind"] in ("choice", "select") and not f["choices"] and f["col"] in j.frame:
                 choices[f["col"]] = {v for v in j.frame[f["col"]].dropna().unique().tolist() if v != ""}
-    parsed = nl.parse(q, nl.Players(rows), engine.TABLE[kind], {"positions": set(), "choices": choices}).as_dict()
+    return season, nl.Players(rows), {"positions": set(), "choices": choices}
+
+
+def _with_player(parsed: dict, season: int) -> dict:
     if parsed.get("name"):
         hit = [c for k in engine.KINDS for c in engine.listing(k, season) if c["playerName"] == parsed["name"]]
         parsed["esb_id"] = hit[0]["esbId"] if hit else None
     return parsed
+
+
+@app.get("/api/ask")
+def ask(q: str = Query(..., min_length=1, max_length=300), kind: Kind = "pass", season: int | None = None,
+        job: str | None = None, llm: Literal["server", "client"] = "server"):
+    """Plain-English question -> filters (+ player / season / chart kind when the question names them). Rules
+    first; for words the rules couldn't place, Gemini (llm=server, GEMINI_API_KEY) - or llm=client: the prompt
+    and schema for the visitor's in-browser model, whose answer comes back through /api/ask/refine."""
+    season, players, dyn = _ask_context(kind, season, job)
+    return _with_player(nl.parse(q, players, engine.TABLE[kind], dyn, llm=llm).as_dict(), season)
+
+
+class RefineRequest(BaseModel):
+    q: str = Field(..., min_length=1, max_length=300)
+    kind: Kind = "pass"
+    season: int | None = None
+    job: str | None = None
+    answer: dict
+
+
+@app.post("/api/ask/refine")
+def ask_refine(req: RefineRequest):
+    """The in-browser model's answer to /api/ask's prompt, validated against the curated filters like Gemini's."""
+    season, players, dyn = _ask_context(req.kind, req.season, req.job)
+    return _with_player(nl.refine(req.q, players, engine.TABLE[req.kind], dyn, req.answer).as_dict(), season)
 
 
 # --------------------------------------------------------------------------------------------- the UI

@@ -24,6 +24,7 @@ import { api, type Dataset, type FilterSpec, type Job, KIND_NOUN, type Kind, kin
 import type { ColorBy } from "@/lib/colors"
 import { exportChart } from "@/lib/exportChart"
 import { applyFilters, describe, type FilterState, fromParams } from "@/lib/filters"
+import { answerJSON, modelStatus, preload, webgpuSupported } from "@/lib/llm"
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -63,6 +64,14 @@ export default function App() {
   const [deeper, setDeeper] = useState(0)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [asking, setAsking] = useState(false)
+  // the Ask bar's in-browser model: on desktops it loads in the background once the page has settled (phones wait
+  // until someone taps the Ask bar, and data-saver connections never preload)
+  useEffect(() => {
+    const conn = (navigator as any).connection
+    if (!webgpuSupported() || /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) || conn?.saveData) return
+    const t = setTimeout(() => preload(), 4000)
+    return () => clearTimeout(t)
+  }, [])
   const pending = useRef<Record<string, string> | null>(null)
 
   useEffect(() => {
@@ -183,7 +192,13 @@ export default function App() {
     setAsking(true)
     try {
       const kind = sel?.kind ?? "pass"
-      const r = await api.ask(q, kind, season, job?.id)
+      // with the in-browser model loaded it reads the leftover words; otherwise the server does (Gemini, if set up)
+      let r = await api.ask(q, kind, season, job?.id, modelStatus().state === "ready" ? "client" : "server")
+      if (r.llm_prompt && r.llm_schema) {
+        // words the rules couldn't place: the in-browser model reads them (if it's loaded), the server validates
+        const answer = await answerJSON(r.llm_prompt, r.llm_schema, r.llm_messages, r.llm_ft).catch(() => null)
+        if (answer) r = await api.refine(q, kind, season, answer, job?.id)
+      }
       const targetKind = kindFromDataset(r.dataset) ?? kind
       const targetSeason = r.seasons?.[0] ?? sel?.season ?? season
       const meaning = r.understood.map((u) => u.meaning).filter(Boolean)
