@@ -29,9 +29,14 @@ const sign = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}`
 // average EPA per target, scaled so +/-0.5 reaches the ends of the field's per-play EPA scale
 const avgColor = (v: number) => epaColor(Math.max(-3, Math.min(3, v * 6)))
 
-export function RouteTreePanel({ kind, plays }: { kind: Kind; plays: Play[] }) {
+/** selected / onPick: the route the chart is filtered to - clicking (or tapping) a branch filters to it, clicking it
+ * again clears it; hovering only previews its numbers */
+export function RouteTreePanel({ kind, plays, selected = null, onPick }: {
+  kind: Kind; plays: Play[]; selected?: string | null; onPick?: (route: string | null) => void
+}) {
   const t = routeTree(kind, plays)
-  const [focus, setFocus] = useState<string | null>(null)
+  const [hover, setFocus] = useState<string | null>(null)
+  const focus = hover ?? selected
   if (!t.total) return null
   const byRoute = new Map(t.routes.map((r) => [r.route, r]))
   const order = Object.keys(BRANCHES).sort((a, b) => (byRoute.get(b)?.targets ?? 0) - (byRoute.get(a)?.targets ?? 0))
@@ -67,7 +72,7 @@ export function RouteTreePanel({ kind, plays }: { kind: Kind; plays: Play[] }) {
             const [lx, ly, anchor] = b.label
             return (
               <g key={r} className={cn("cursor-pointer transition-opacity", focus && focus !== r && "opacity-30")}
-                onMouseEnter={() => s && setFocus(r)} onClick={() => setFocus(focus === r ? null : s ? r : null)}>
+                onMouseEnter={() => s && setFocus(r)} onClick={() => s && onPick?.(selected === r ? null : r)}>
                 <circle cx={b.fruit[0]} cy={b.fruit[1]} r={18} fill="transparent" />
                 <circle cx={b.fruit[0]} cy={b.fruit[1]} r={s ? 10 : 6} strokeWidth={2}
                   className={s ? "stroke-card" : "fill-transparent stroke-muted-foreground/60"}
@@ -93,7 +98,7 @@ export function RouteTreePanel({ kind, plays }: { kind: Kind; plays: Play[] }) {
               {f.td > 0 && <Row k="Touchdowns" v={String(f.td)} />}
             </div>
           ) : (
-            <p className="text-muted-foreground">Hover or tap a route for its numbers.</p>
+            <p className="text-muted-foreground">Hover a route for its numbers; click or tap it to show only those {noun} on the field.</p>
           )}
           <div className="flex flex-col gap-1.5">
             <div className="h-2 w-full rounded-full" style={{ background: `linear-gradient(90deg, ${avgColor(-0.5)}, ${avgColor(0)}, ${avgColor(0.5)})` }} />

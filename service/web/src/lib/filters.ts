@@ -111,3 +111,34 @@ export function numericRange(plays: Play[], col: string): [number, number] | nul
 export function hasData(plays: Play[], col: string): boolean {
   return plays.some((p) => p[col] != null && p[col] !== "")
 }
+
+// Filters in the address bar, so a link reopens exactly this view: col=a|b (a pick), col=true|false (yes / no),
+// col__gte=x / col__lte=y (a range). "|" between values: some values (personnel: "1 RB, 2 TE, 2 WR") hold commas.
+export function filtersToUrl(state: FilterState, q: URLSearchParams) {
+  for (const [col, f] of Object.entries(state)) {
+    if (f.op === "in") q.set(col, f.values.join("|"))
+    else if (f.op === "bool") q.set(col, String(f.value))
+    else {
+      if (f.min != null) q.set(`${col}__gte`, String(f.min))
+      if (f.max != null) q.set(`${col}__lte`, String(f.max))
+    }
+  }
+}
+
+export function filtersFromUrl(q: URLSearchParams, specs: FilterSpec[]): FilterState {
+  const byCol = new Map(specs.map((s) => [s.col, s]))
+  const out: FilterState = {}
+  for (const [key, raw] of q.entries()) {
+    const [col, op] = key.split("__")
+    const spec = byCol.get(col)
+    if (!spec) continue
+    if (op === "gte" || op === "lte") {
+      const n = Number(raw)
+      if (Number.isNaN(n)) continue
+      const cur = (out[col]?.op === "range" ? out[col] : { op: "range" }) as Extract<FilterValue, { op: "range" }>
+      out[col] = op === "gte" ? { ...cur, min: n } : { ...cur, max: n }
+    } else if (!op && spec.kind === "bool") out[col] = { op: "bool", value: truthy(raw) }
+    else if (!op) out[col] = { op: "in", values: raw.split("|").filter(Boolean) }
+  }
+  return out
+}

@@ -23,8 +23,9 @@ import { PlayTable } from "@/components/app/PlayTable"
 import { api, type Dataset, type FilterSpec, type Job, KIND_NOUN, type Kind, kindFromDataset, type Player, weekLabel } from "@/lib/api"
 import type { ColorBy } from "@/lib/colors"
 import { exportChart } from "@/lib/exportChart"
-import { applyFilters, describe, type FilterState, fromParams } from "@/lib/filters"
-import { type HeatMetric, METRICS, splitOf } from "@/lib/heat"
+import { applyFilters, describe, type FilterState, filtersFromUrl, filtersToUrl, fromParams } from "@/lib/filters"
+import { type HeatMetric, isVersus, METRICS, splitOf } from "@/lib/heat"
+import { GAPS } from "@/lib/stats"
 import { answerJSON, modelStatus, preload, webgpuSupported } from "@/lib/llm"
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -77,6 +78,9 @@ export default function App() {
     return () => clearTimeout(t)
   }, [])
   const pending = useRef<Record<string, string> | null>(null)
+  // a shared link's filters and weeks, applied once the player's data and the filter list are in
+  const pendingUrl = useRef<URLSearchParams | null>(new URLSearchParams(window.location.search))
+  const [versusOpen, setVersusOpen] = useState(false)
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark)
@@ -119,8 +123,12 @@ export default function App() {
     if (colorBy !== "outcome") q.set("color", colorBy)
     if (threeD) q.set("3d", "1")
     if (showUndrawn) q.set("undrawn", "1")
+    if (!pendingUrl.current) {        // until a link's own filters are applied, keep them out of the way
+      filtersToUrl(filters, q)
+      if (weeks) q.set("wk", [...weeks].join("|"))
+    }
     window.history.replaceState(null, "", `?${q}`)
-  }, [sel, view, heatOf, heatMetricPick, heatSplitPick, yac, colorBy, threeD, showUndrawn])
+  }, [sel, view, heatOf, heatMetricPick, heatSplitPick, yac, colorBy, threeD, showUndrawn, filters, weeks])
 
   useEffect(() => {
     if (season == null) return
@@ -178,8 +186,15 @@ export default function App() {
     api.filters(sel.kind).then(setSpecs)
   }, [sel?.kind])
 
-  // filters from a question asked before the data arrived
+  // filters from a question asked before the data arrived, or from the link the page was opened with
   useEffect(() => {
+    if (data && specs && pendingUrl.current) {
+      const q = pendingUrl.current
+      pendingUrl.current = null
+      setFilters(filtersFromUrl(q, specs.filters))
+      const wk = q.get("wk")
+      if (wk) setWeeks(new Set(wk.split("|")))
+    }
     if (data && specs && pending.current) {
       setFilters(fromParams(pending.current, specs.filters))
       pending.current = null
@@ -188,6 +203,7 @@ export default function App() {
 
   const pick = (player: Player, kind: Kind, s: number) => {
     setSearchOpen(false)
+    pendingUrl.current = null
     setFilters({})
     setWeeks(null)
     if (colorBy === "route" && kind === "carry") setColorBy("outcome")
@@ -258,8 +274,85 @@ export default function App() {
     })
   // the heatmap's metric / split, held to what this chart kind offers (CPOE is passes only, ...)
   const heatMetric: HeatMetric = sel && METRICS[sel.kind].some(([m]) => m === heatMetricPick) ? heatMetricPick : "volume"
-  const heatSplit = sel ? splitOf(sel.kind, heatSplitPick).key : heatSplitPick
-  const heatSpec = { metric: heatMetric, split: heatSplit }
+  const heatSplit = sel && !isVersus(heatSplitPick) ? splitOf(sel.kind, heatSplitPick).key : heatSplitPick
+
+  // compare against another player (same season) or this player's previous season: their data, same filters
+  const versusTarget = useMemo(() => {
+    if (!sel || view !== "heat" || heatMetric !== "compare" || !isVersus(heatSplit)) return null
+    const short = (n: string) => n.split(" ").filter((w) => !/^(jr|sr|ii|iii|iv)\.?$/i.test(w)).at(-1) ?? n
+    if (heatSplit === "season")
+      return { esb: sel.player.esb_id, season: sel.season - 1, mine: `${sel.season}`, other: `${sel.season - 1}`,
+               who: `${sel.player.name} ${sel.season - 1}` }
+    const esb = heatSplit.slice("player:".length)
+    const other = players.find((x) => x.esb_id === esb)?.name ?? "the other player"
+    return { esb, season: sel.season, mine: short(sel.player.name), other: short(other), who: other }
+  }, [sel, view, heatMetric, heatSplit, players])
+  const [versusData, setVersusData] = useState<{ key: string; data: Dataset } | null>(null)
+  const versusKey = versusTarget && sel ? `${sel.kind}:${versusTarget.esb}:${versusTarget.season}` : null
+  useEffect(() => {
+    if (!versusTarget || !sel || !versusKey || versusData?.key === versusKey) return
+    let cancelled = false
+    const id = toast.loading(`Loading ${versusTarget.who} for the comparison…`)
+    ;(async () => {
+      try {
+        let j = await api.load(sel.kind, versusTarget.esb, versusTarget.season)
+        while (!cancelled && !(j.version > 0) && j.status !== "error") {
+          await sleep(800)
+          j = await api.job(j.id)
+        }
+        if (cancelled) return
+        if (j.status === "error") throw new Error(j.error ?? "the charts couldn't be read")
+        const d = await api.data(j.id)
+        if (!cancelled) {
+          setVersusData({ key: versusKey, data: d })
+          toast.success(`Comparing with ${versusTarget.who}`, { id })
+        }
+      } catch (e: any) {
+        if (cancelled) return
+        toast.error(`Couldn't load ${versusTarget.who}`, { id, description: e.message })
+        setHeatSplit("coverage")
+      }
+    })()
+    return () => {
+      cancelled = true
+      toast.dismiss(id)
+    }
+  }, [versusKey])
+  const versus = useMemo(() => {
+    if (!versusTarget || !versusData || versusData.key !== versusKey) return null
+    const ps = applyFilters(versusData.data.plays, filters, { weeks: null })
+    return { mine: versusTarget.mine, other: versusTarget.other, plays: showUndrawn ? ps : ps.filter((p) => !p.estimated) }
+  }, [versusTarget, versusData, versusKey, filters, showUndrawn])
+  const heatSpec = { metric: heatMetric, split: heatSplit, versus: versus ? ([versus.mine, versus.other] as [string, string]) : null }
+
+  // the route tree / run gaps filter the chart when clicked; they list every route / gap under the other filters
+  const without = (cols: string[]) => {
+    if (!data) return []
+    const rest = Object.fromEntries(Object.entries(filters).filter(([c]) => !cols.includes(c)))
+    const ps = applyFilters(data.plays, rest, { weeks })
+    return showUndrawn ? ps : ps.filter((p) => !p.estimated)
+  }
+  const treeCols = sel?.kind === "carry" ? ["run_location", "run_gap"] : ["tree_route"]
+  const treePlays = useMemo(() => without(treeCols), [data, filters, weeks, showUndrawn, sel?.kind])
+  const one = (col: string) => {
+    const f = filters[col]
+    return f?.op === "in" && f.values.length === 1 ? f.values[0] : null
+  }
+  const pickedGap = GAPS.find((g) => one("run_location") === g.loc && (g.gap ? one("run_gap") === g.gap : !filters.run_gap))?.key ?? null
+  const setCols = (next: Record<string, string | null>) =>
+    setFilters((f) => {
+      const out = { ...f }
+      for (const [c, v] of Object.entries(next)) {
+        if (v == null) delete out[c]
+        else out[c] = { op: "in", values: [v] }
+      }
+      return out
+    })
+  const pickRoute = (r: string | null) => setCols({ tree_route: r })
+  const pickGap = (key: string | null) => {
+    const g = GAPS.find((x) => x.key === key)
+    setCols(g ? { run_location: g.loc, run_gap: g.gap } : { run_location: null, run_gap: null })
+  }
   const onField = useMemo(() => (showUndrawn ? visible : visible.filter((p) => !p.estimated)), [visible, showUndrawn])
   const selected = useMemo(() => visible.find((p) => p.id === selectedId) ?? data?.plays.find((p) => p.id === selectedId) ?? null, [visible, data, selectedId])
   const specByCol = useMemo(() => new Map((specs?.filters ?? []).map((s) => [s.col, s])), [specs])
@@ -313,6 +406,12 @@ export default function App() {
       <div className="pointer-events-none fixed inset-0 -z-0 bg-[radial-gradient(circle_at_20%_0%,rgba(52,211,153,0.06),transparent_40%),radial-gradient(circle_at_90%_10%,rgba(96,165,250,0.06),transparent_35%)]" />
       <Header seasons={seasons} season={season ?? 0} onSeason={setSeason} onSearch={() => setSearchOpen(true)} dark={dark} onTheme={() => setDark((d) => !d)} />
       <PlayerSearch open={searchOpen} onOpenChange={setSearchOpen} season={season ?? 0} players={players} onPick={(p, k) => pick(p, k, season!)} />
+      {sel && (
+        // the heatmap's "compare with another player": anyone with the same kind of chart this season
+        <PlayerSearch open={versusOpen} onOpenChange={setVersusOpen} season={sel.season}
+          players={players.filter((x) => x.kinds[sel.kind] && x.esb_id !== sel.player.esb_id)}
+          onPick={(p) => (setVersusOpen(false), setHeatSplit(`player:${p.esb_id}`))} />
+      )}
 
       {!sel ? (
         <Landing season={season ?? 0} players={players} onSearch={() => setSearchOpen(true)} />
@@ -382,13 +481,15 @@ export default function App() {
                     </div>
                     <FieldToolbar kind={sel.kind} view={view} setView={setView} colorBy={colorBy} setColorBy={setColorBy}
                       heatOf={heatOf} setHeatOf={setHeatOf} heatMetric={heatMetric} setHeatMetric={setHeatMetric}
-                      heatSplit={heatSplit} setHeatSplit={setHeatSplit} yac={yac} setYac={setYac} threeD={threeD} setThreeD={setThreeD}
+                      heatSplit={heatSplit} setHeatSplit={setHeatSplit} onPickPlayer={() => setVersusOpen(true)}
+                      versusName={heatSplit.startsWith("player:") ? players.find((x) => `player:${x.esb_id}` === heatSplit)?.name : null}
+                      yac={yac} setYac={setYac} threeD={threeD} setThreeD={setThreeD}
                       fullDepth={fullDepth} setFullDepth={setFullDepth} deeper={deeper} onExport={exportField}
                       undrawn={data.counts.undrawn ?? 0} showUndrawn={showUndrawn} setShowUndrawn={setShowUndrawn} />
                   </div>
                   <div className="bg-[#0b0c0f]">
                     <Field ref={fieldRef} kind={sel.kind} plays={onField} allPlays={data.plays} colorBy={colorBy} view={view} heatOf={heatOf}
-                      heatMetric={heatMetric} heatSplit={heatSplit} yac={yac}
+                      heatMetric={heatMetric} heatSplit={heatSplit} versus={versus} yac={yac}
                       threeD={threeD} selectedId={selectedId} onSelect={setSelectedId} animateKey={`${data.kind}-${data.version}-${sel.player.esb_id}`}
                       fullDepth={fullDepth} onDeeper={setDeeper} />
                   </div>
@@ -407,7 +508,8 @@ export default function App() {
                     <TabsTrigger value="games">Games</TabsTrigger>
                   </TabsList>
                   <TabsContent value="insights" className="mt-3">
-                    <Insights kind={sel.kind} plays={visible} fieldPlays={onField} receiverPlays={receiverPlays}
+                    <Insights kind={sel.kind} plays={visible} fieldPlays={onField} treePlays={treePlays}
+                      route={one("tree_route")} onRoute={pickRoute} gap={pickedGap} onGap={pickGap} receiverPlays={receiverPlays}
                       receiver={(filters.receiver_player_name as { values?: string[] } | undefined)?.values?.[0] ?? null} onReceiver={pickReceiver} />
                   </TabsContent>
                   <TabsContent value="plays" className="mt-3">

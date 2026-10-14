@@ -2,18 +2,18 @@ import { Box, CircleDashed, Clipboard, Download, Flame, Image as ImageIcon, Move
 import { Button } from "@/components/ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import type { LegendSpec } from "@/lib/exportChart"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Toggle } from "@/components/ui/toggle"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import type { Kind } from "@/lib/api"
 import { type ColorBy, DOWN_COLORS, GAIN, OUTCOME, ROUTE_COLORS, ROUTE_LINE } from "@/lib/colors"
-import { COMPARE_A, COMPARE_B, type HeatMetric, METRICS, splitOf, splitsFor, VALUE_RAMP } from "@/lib/heat"
+import { COMPARE_A, COMPARE_B, type HeatMetric, isVersus, METRICS, splitOf, splitsFor, VALUE_RAMP } from "@/lib/heat"
 import type { FieldView } from "./Field"
 
 export type ExportFormat = "png" | "svg" | "clipboard"
 
 export function FieldToolbar({ kind, view, setView, colorBy, setColorBy, heatOf, setHeatOf, heatMetric, setHeatMetric, heatSplit, setHeatSplit,
-  yac, setYac, threeD, setThreeD, fullDepth, setFullDepth, deeper, onExport, undrawn, showUndrawn, setShowUndrawn }: {
+  versusName, onPickPlayer, yac, setYac, threeD, setThreeD, fullDepth, setFullDepth, deeper, onExport, undrawn, showUndrawn, setShowUndrawn }: {
   kind: Kind
   view: FieldView
   setView: (v: FieldView) => void
@@ -25,6 +25,8 @@ export function FieldToolbar({ kind, view, setView, colorBy, setColorBy, heatOf,
   setHeatMetric: (m: HeatMetric) => void
   heatSplit: string
   setHeatSplit: (s: string) => void
+  versusName?: string | null       // the player compared against, when the split is "player:<esb id>"
+  onPickPlayer: () => void
   yac: boolean
   setYac: (b: boolean) => void
   threeD: boolean
@@ -83,7 +85,8 @@ export function FieldToolbar({ kind, view, setView, colorBy, setColorBy, heatOf,
             </SelectContent>
           </Select>
           {heatMetric === "compare" && (
-            <Select value={splitOf(kind, heatSplit).key} onValueChange={setHeatSplit}>
+            <Select value={isVersus(heatSplit) ? heatSplit : splitOf(kind, heatSplit).key}
+              onValueChange={(v) => (v === "pick-player" ? onPickPlayer() : setHeatSplit(v))}>
               <SelectTrigger size="sm" className="h-8 w-[196px] text-xs">
                 <SelectValue />
               </SelectTrigger>
@@ -91,6 +94,12 @@ export function FieldToolbar({ kind, view, setView, colorBy, setColorBy, heatOf,
                 {splitsFor(kind).map((sp) => (
                   <SelectItem key={sp.key} value={sp.key} className="text-xs">{sp.label}</SelectItem>
                 ))}
+                <SelectSeparator />
+                <SelectItem value="season" className="text-xs">vs his previous season</SelectItem>
+                {heatSplit.startsWith("player:") && (
+                  <SelectItem value={heatSplit} className="text-xs">vs {versusName ?? "another player"}</SelectItem>
+                )}
+                <SelectItem value="pick-player" className="text-xs">vs another player…</SelectItem>
               </SelectContent>
             </Select>
           )}
@@ -147,9 +156,11 @@ export function FieldToolbar({ kind, view, setView, colorBy, setColorBy, heatOf,
 const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1)
 
 /** The legend for a view / colouring: shared by the on-screen legend and the exported image. */
-export function legendSpec(kind: Kind, colorBy: ColorBy, view: FieldView, heat?: { metric: HeatMetric; split: string }): LegendSpec {
+export function legendSpec(kind: Kind, colorBy: ColorBy, view: FieldView,
+                           heat?: { metric: HeatMetric; split: string; versus?: [string, string] | null }): LegendSpec {
   if (view === "heat") {
     const m = heat?.metric ?? "volume"
+    if (m === "compare" && heat?.versus) return { gradient: [COMPARE_B, "#3f3f46", COMPARE_A], lo: `more ${heat.versus[1]}`, hi: `more ${heat.versus[0]}` }
     if (m === "compare") {
       const sp = splitOf(kind, heat!.split)
       return { gradient: [COMPARE_B, "#3f3f46", COMPARE_A], lo: `more ${sp.b}`, hi: `more ${sp.a}` }
@@ -171,7 +182,7 @@ export function legendSpec(kind: Kind, colorBy: ColorBy, view: FieldView, heat?:
 }
 
 export function Legend({ kind, colorBy, view, heat, undrawn = false }: {
-  kind: Kind; colorBy: ColorBy; view: FieldView; heat?: { metric: HeatMetric; split: string }; undrawn?: boolean
+  kind: Kind; colorBy: ColorBy; view: FieldView; heat?: { metric: HeatMetric; split: string; versus?: [string, string] | null }; undrawn?: boolean
 }) {
   const spec = legendSpec(kind, colorBy, view, heat)
   if ("gradient" in spec) return <GradientLegend from={spec.gradient[0]} via={spec.gradient[1]} to={spec.gradient[2]} lo={spec.lo} hi={spec.hi} />

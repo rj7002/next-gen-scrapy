@@ -17,9 +17,14 @@ const sign = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}`
 // rushing EPA per carry spans less than passing: +/-0.3 reaches the ends of the scale
 const avgColor = (v: number) => epaColor(Math.max(-3, Math.min(3, v * 10)))
 
-export function RunGapsPanel({ plays }: { plays: Play[] }) {
+/** selected / onPick: the gap the chart is filtered to (a GAPS key) - clicking a gap filters to it, again clears it */
+export function RunGapsPanel({ plays, selected = null, onPick }: {
+  plays: Play[]; selected?: string | null; onPick?: (gap: string | null) => void
+}) {
   const g = runGaps(plays)
-  const [focus, setFocus] = useState<number | null>(null)
+  const [hover, setFocus] = useState<number | null>(null)
+  const sel = selected ? g.gaps.findIndex((x) => x.key === selected) : -1
+  const focus = hover ?? (sel >= 0 ? sel : null)
   if (!g.total) return null
   const f = focus != null ? g.gaps[focus] : null
   return (
@@ -71,7 +76,7 @@ export function RunGapsPanel({ plays }: { plays: Play[] }) {
           <text x={RB[0]} y={RB[1] + 4} textAnchor="middle" className="fill-white text-[11px] font-semibold">RB</text>
           {g.gaps.map((x, i) => (
             <g key={x.key} className={cn("cursor-pointer transition-opacity", focus != null && focus !== i && "opacity-35")}
-              onMouseEnter={() => setFocus(i)} onClick={() => setFocus(focus === i ? null : i)}>
+              onMouseEnter={() => setFocus(i)} onClick={() => x.carries && onPick?.(selected === x.key ? null : x.key)}>
               <rect x={COL[i] - 38} y={0} width={76} height={TIP_Y + 4} fill="transparent" />
               <text x={COL[i]} y={20} textAnchor="middle" className="fill-muted-foreground text-[13px]">{x.label}</text>
               <text x={COL[i]} y={56} textAnchor="middle"
@@ -97,7 +102,7 @@ export function RunGapsPanel({ plays }: { plays: Play[] }) {
             </div>
           ) : (
             <span className="text-muted-foreground">
-              Hover or tap a gap for its numbers.
+              Hover a gap for its numbers; click or tap it to show only those carries on the field.
               {g.unmatched > 0 && ` Not shown: ${g.unmatched} ${g.unmatched === 1 ? "line" : "lines"} on the chart not matched to a play (the gap comes from play-by-play).`}
               {g.unknown > 0 && ` ${g.unknown} matched ${g.unknown === 1 ? "carry has" : "carries have"} no gap in play-by-play.`}
             </span>

@@ -43,6 +43,8 @@ export const SPLITS: Split[] = [
     side: (p) => (p.posteam_type === "home" ? "a" : p.posteam_type === "away" ? "b" : null) },
 ]
 export const splitsFor = (kind: Kind) => SPLITS.filter((s) => s.kinds.includes(kind))
+/** compare against something other than a split of these plays: "season" (his previous season) or "player:<esb id>" */
+export const isVersus = (key: string) => key === "season" || key.startsWith("player:")
 export const splitOf = (kind: Kind, key: string) => splitsFor(kind).find((s) => s.key === key) ?? splitsFor(kind)[0]
 
 /** A value map's per-play value, the value its colour scale centres on, and how far either way is full colour. */
@@ -79,9 +81,10 @@ const mix = (a: number[], b: number[], t: number) => a.map((x, i) => x + (b[i] -
  * flat map is there, and its colour - or rgb null for the volume map, which is coloured by height. */
 export interface HeatField { nx: number; ny: number; h: Float32Array; alpha: Float32Array; rgb: Uint8ClampedArray | null; floor: number }
 
+/** other: in compare mode, the other side's plays (another player, or another season) instead of a split */
 export function heatField(plays: Play[], kind: Kind, heatOf: "end" | "path", metric: HeatMetric, splitKey: string,
                           x0: number, width: number, ymin: number, ymax: number,
-                          spot: (p: Play, kind: Kind) => [number, number] | null): HeatField | null {
+                          spot: (p: Play, kind: Kind) => [number, number] | null, other?: Play[] | null): HeatField | null {
   const res = 0.5
   const nx = Math.round(width / res)
   const ny = Math.round((ymax - ymin) / res)
@@ -120,15 +123,21 @@ export function heatField(plays: Play[], kind: Kind, heatOf: "end" | "path", met
   const alpha = new Float32Array(N)
 
   if (metric === "compare") {
-    const split = splitOf(kind, splitKey)
     const A = new Float32Array(N)
     const B = new Float32Array(N)
     let na = 0
     let nb = 0
-    for (const p of plays) {
-      const s = split?.side(p)
-      if (s === "a") (na++, each(p, (x, y, w) => splat(A, x, y, w)))
-      else if (s === "b") (nb++, each(p, (x, y, w) => splat(B, x, y, w)))
+    if (isVersus(splitKey)) {
+      if (!other) return null
+      for (const p of plays) (na++, each(p, (x, y, w) => splat(A, x, y, w)))
+      for (const p of other) (nb++, each(p, (x, y, w) => splat(B, x, y, w)))
+    } else {
+      const split = splitOf(kind, splitKey)
+      for (const p of plays) {
+        const s = split?.side(p)
+        if (s === "a") (na++, each(p, (x, y, w) => splat(A, x, y, w)))
+        else if (s === "b") (nb++, each(p, (x, y, w) => splat(B, x, y, w)))
+      }
     }
     if (!na || !nb) return null
     const d = new Float32Array(N)

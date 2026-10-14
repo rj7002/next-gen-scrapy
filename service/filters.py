@@ -54,6 +54,10 @@ FILTERS = [
     # Passing
     F("air_yards", "Air yards", "Passing", "range", tables=PASSING, help="20+ = deep"),
     F("receiver_player_name", "Thrown to", "Passing", "select", tables=("passes",)),
+    F("tree_route", "Route (tree)", "Passing", "choice", tables=PASSING,
+      choices=[[r, r.title()] for r in ("GO", "POST", "CORNER", "OUT", "IN", "SLANT", "HITCH", "CROSS", "FLAT", "SCREEN",
+                                        "WHEEL", "ANGLE")],
+      help="the route tree's route: NGS's label for the target's route where there is one, else read from the line"),
     F("receiver_position", "Target's position", "Passing", "choice", tables=("passes",),
       choices=[["WR", "WR"], ["TE", "TE"], ["RB", "RB"], ["FB", "FB"]]),
     F("pass_length", "Pass length", "Passing", "choice", tables=PASSING,

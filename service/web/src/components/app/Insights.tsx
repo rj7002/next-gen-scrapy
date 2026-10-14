@@ -149,8 +149,9 @@ function Coverage({ plays }: { plays: Play[] }) {
 
 /** fieldPlays: what's drawn on the field (no undrawn throws unless they're shown) - the route tree and run gaps
  * count exactly those */
-export function Insights({ kind, plays, fieldPlays, receiverPlays, receiver, onReceiver }: {
+export function Insights({ kind, plays, fieldPlays, treePlays, route, onRoute, gap, onGap, receiverPlays, receiver, onReceiver }: {
   kind: Kind; plays: Play[]; fieldPlays: Play[]
+  treePlays?: Play[]; route?: string | null; onRoute?: (r: string | null) => void; gap?: string | null; onGap?: (g: string | null) => void
   receiverPlays?: Play[]; receiver?: string | null; onReceiver?: (name: string | null) => void
 }) {
   const panels = [
@@ -162,7 +163,8 @@ export function Insights({ kind, plays, fieldPlays, receiverPlays, receiver, onR
   ].filter(Boolean)
   return (
     <div className="flex flex-col gap-3">
-    {kind === "carry" ? <RunGapsPanel plays={fieldPlays} /> : <RouteTreePanel kind={kind} plays={fieldPlays} />}
+    {kind === "carry" ? <RunGapsPanel plays={treePlays ?? fieldPlays} selected={gap} onPick={onGap} />
+      : <RouteTreePanel kind={kind} plays={treePlays ?? fieldPlays} selected={route} onPick={onRoute} />}
     {kind === "pass" && onReceiver && <ReceiversPanel plays={receiverPlays ?? plays} selected={receiver ?? null} onPick={onReceiver} />}
     <div className={cn("grid gap-3 md:grid-cols-2", panels.length % 3 === 0 && "xl:grid-cols-3", panels.length === 5 && "xl:grid-cols-6 xl:[&>*:nth-child(-n+3)]:col-span-2 xl:[&>*:nth-child(n+4)]:col-span-3")}>
       {panels}

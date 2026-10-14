@@ -3,7 +3,7 @@ import { createPortal } from "react-dom"
 import { type Kind, type Play, unmatchedText } from "@/lib/api"
 import type { HeatImage } from "@/lib/exportChart"
 import { type ColorBy, playColor, ROUTE_LINE } from "@/lib/colors"
-import { COMPARE_A, COMPARE_B, type HeatMetric, heatField, heatImage, heatSlices, splitOf } from "@/lib/heat"
+import { COMPARE_A, COMPARE_B, type HeatMetric, heatField, heatImage, heatSlices, isVersus, splitOf } from "@/lib/heat"
 import { kpis, situation } from "@/lib/stats"
 import { cn } from "@/lib/utils"
 import { PlayFacts, playWhen } from "./PlayDetail"
@@ -31,6 +31,8 @@ interface Props {
   heatOf: "end" | "path"
   heatMetric: HeatMetric
   heatSplit: string
+  /** compare against another player / season: their plays (same filters) and both sides' names */
+  versus?: { mine: string; other: string; plays: Play[] } | null
   yac: boolean
   threeD: boolean
   selectedId: string | null
@@ -84,7 +86,8 @@ const DEFAULT_CAM = { tilt: 40, yaw: 0, zoom: 1, panX: 0, panY: 0 }
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 
 export function Field(props: Props) {
-  const { kind, plays, allPlays, colorBy, view, heatOf, heatMetric, heatSplit, yac, threeD, selectedId, onSelect, animateKey, fullDepth } = props
+  const { kind, plays, allPlays, colorBy, view, heatOf, heatMetric, heatSplit, versus, yac, threeD, selectedId, onSelect, animateKey, fullDepth } = props
+  const vsPlays = heatMetric === "compare" && isVersus(heatSplit) ? versus?.plays ?? null : null
   const showYac = yac && kind === "pass" && view === "plays"
   const wrap = useRef<HTMLDivElement>(null)
   // hover position is in viewport coordinates: the card is portalled to <body> so the field never clips it
@@ -202,8 +205,8 @@ export function Field(props: Props) {
   const H = ymax - ymin
   const Y = (y: number) => ymax - y
 
-  const heatF = useMemo(() => (view === "heat" ? heatField(plays, kind, heatOf, heatMetric, heatSplit, XL, W, ymin, ymax, landing) : null),
-    [view, plays, kind, heatOf, heatMetric, heatSplit, ymin, ymax])
+  const heatF = useMemo(() => (view === "heat" ? heatField(plays, kind, heatOf, heatMetric, heatSplit, XL, W, ymin, ymax, landing, vsPlays) : null),
+    [view, plays, kind, heatOf, heatMetric, heatSplit, vsPlays, ymin, ymax])
   const heatImg = useMemo(() => (heatF ? { url: heatImage(heatF), x: XL, y: 0, w: W, h: ymax - ymin } : null), [heatF, ymin, ymax])
   // in 3D the heatmap rises off the field: stacked slices, each lifted by the density it marks
   const heatStack = useMemo(() => (heatF && threeD ? heatSlices(heatF) : null), [heatF, threeD])
@@ -226,10 +229,10 @@ export function Field(props: Props) {
     if (!(u >= 0 && u <= 1 && v >= 0 && v <= 1)) return null
     return [XL + u * W, ymax - v * (ymax - ymin)]
   }
-  const region = useMemo(() => {
-    if (!spot || view !== "heat") return null
+  const around = (list: Play[]) => {
+    if (!spot) return []
     const near = (x: number, y: number) => (x - spot.x) ** 2 + (y - spot.y) ** 2 <= radius * radius
-    return plays.filter((p) => {
+    return list.filter((p) => {
       if (heatOf === "path" && kind !== "pass") {
         const xs: number[] = p.path_x ?? []
         const yv: number[] = p.path_y ?? []
@@ -238,7 +241,16 @@ export function Field(props: Props) {
       const l = landing(p, kind)
       return l != null && near(l[0], l[1])
     })
-  }, [spot, view, plays, heatOf, kind, radius])
+  }
+  const region = useMemo(() => (spot && view === "heat" ? around(plays) : null), [spot, view, plays, heatOf, kind, radius])
+  // compare mode: the two sides of the hovered spot - a split of these plays, or these vs the other player's / season's
+  const compare = useMemo(() => {
+    if (!region || heatMetric !== "compare") return undefined
+    if (vsPlays && versus) return { a: versus.mine, b: versus.other, sides: [region, around(vsPlays)] as [Play[], Play[]] }
+    if (isVersus(heatSplit)) return undefined
+    const sp = splitOf(kind, heatSplit)
+    return { a: sp.a, b: sp.b, sides: [region.filter((p) => sp.side(p) === "a"), region.filter((p) => sp.side(p) === "b")] as [Play[], Play[]] }
+  }, [region, heatMetric, heatSplit, vsPlays, versus, kind])
   useEffect(() => {
     if (view !== "heat") setSpot(null)
   }, [view])
@@ -246,10 +258,10 @@ export function Field(props: Props) {
     svg: () => svgRef.current,
     heat: () => {
       if (heatImg) return heatImg
-      const f = heatField(plays, kind, heatOf, heatMetric, heatSplit, XL, W, ymin, ymax, landing)
+      const f = heatField(plays, kind, heatOf, heatMetric, heatSplit, XL, W, ymin, ymax, landing, vsPlays)
       return f ? { url: heatImage(f), x: XL, y: 0, w: W, h: ymax - ymin } : null
     },
-  }), [heatImg, plays, kind, heatOf, heatMetric, heatSplit, ymin, ymax])
+  }), [heatImg, plays, kind, heatOf, heatMetric, heatSplit, vsPlays, ymin, ymax])
 
   const byId = useMemo(() => new Map(plays.map((p) => [p.id, p])), [plays])
   const hovered = hover ? byId.get(hover.id) : null
@@ -305,7 +317,12 @@ export function Field(props: Props) {
         }
         setHover((h) => (h ? { ...h, x: e.clientX, y: e.clientY } : h))
       }}
-      onMouseLeave={() => (setHover(null), setSpot(null))}
+      onMouseLeave={() => canHover && (setHover(null), setSpot(null))}
+      onClick={(e) => {
+        if (canHover || view !== "heat" || justDragged.current) return
+        const f = fieldPoint(e.clientX, e.clientY)
+        setSpot(f ? { x: f[0], y: f[1], cx: e.clientX, cy: e.clientY } : null)
+      }}
     >
       {/* outer: pan, then tilt about the bottom edge (keeps the default framing); inner: turn and zoom about the
           middle of the field, in its own plane, so it spins in place */}
@@ -428,7 +445,7 @@ export function Field(props: Props) {
       {hovered && hover && canHover && !dragging && view !== "heat" && <PlayHoverCard play={hovered} kind={kind} x={hover.x} y={hover.y} />}
       {spot && region && !dragging && (
         <RegionCard kind={kind} plays={region} total={plays.length} radius={radius} paths={heatOf === "path" && kind !== "pass"}
-          split={heatMetric === "compare" ? splitOf(kind, heatSplit) : undefined} x={spot.cx} y={spot.cy} />
+          compare={compare} versus={!!vsPlays} touch={!canHover} x={spot.cx} y={spot.cy} />
       )}
     </div>
   )
@@ -574,8 +591,9 @@ function PlayHoverCard({ play, kind, x, y }: { play: Play; kind: Kind; x: number
 }
 
 /** The heatmap's hover card: the same numbers as the cards above the field, for the plays around the cursor. */
-function RegionCard({ kind, plays, total, radius, paths, split, x, y }: {
-  kind: Kind; plays: Play[]; total: number; radius: number; paths: boolean; split?: ReturnType<typeof splitOf>; x: number; y: number
+function RegionCard({ kind, plays, total, radius, paths, compare, versus, touch, x, y }: {
+  kind: Kind; plays: Play[]; total: number; radius: number; paths: boolean
+  compare?: { a: string; b: string; sides: [Play[], Play[]] }; versus: boolean; touch: boolean; x: number; y: number
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const [h, setH] = useState(0)
@@ -586,28 +604,32 @@ function RegionCard({ kind, plays, total, radius, paths, split, x, y }: {
   const w = 300
   const gap = 18
   const pad = 8
-  const left = x + gap + w + pad <= window.innerWidth ? x + gap : Math.max(pad, x - gap - w)
-  const top = Math.min(Math.max(pad, y - 48), Math.max(pad, window.innerHeight - h - pad))
+  // beside the cursor; on a touch screen above or below the finger instead, so the tapped spot stays in view
+  const left = touch ? Math.max(pad, Math.min(x - w / 2, window.innerWidth - w - pad))
+    : x + gap + w + pad <= window.innerWidth ? x + gap : Math.max(pad, x - gap - w)
+  const top = touch ? (y + 56 + h + pad <= window.innerHeight ? y + 56 : Math.max(pad, y - 56 - h))
+    : Math.min(Math.max(pad, y - 48), Math.max(pad, window.innerHeight - h - pad))
   const [one, many] = kind === "pass" ? ["throw", "throws"] : kind === "route" ? ["target", "targets"] : ["carry", "carries"]
-  const stats = plays.length && !split ? kpis(kind, plays).slice(1) : []
-  const sides = split && plays.length ? (["a", "b"] as const).map((s) => plays.filter((p) => split.side(p) === s)) : null
+  const stats = plays.length && !compare ? kpis(kind, plays).slice(1) : []
+  const sides = compare && (compare.sides[0].length || compare.sides[1].length) ? compare.sides : null
+  const n = versus && compare ? compare.sides[0].length + compare.sides[1].length : plays.length
   return createPortal(
     <div ref={ref} style={{ left, top, width: w, visibility: h ? "visible" : "hidden" }}
       className="dark pointer-events-none fixed z-50 rounded-xl border border-white/10 bg-zinc-950/95 p-3.5 text-xs text-foreground shadow-2xl backdrop-blur-md">
       <div className="text-sm font-medium">
-        {plays.length ? `${plays.length} ${plays.length === 1 ? one : many}` : `No ${many} here`}
+        {n ? `${n} ${n === 1 ? one : many}` : `No ${many} here`}
       </div>
       <div className="mb-2.5 text-[11px] text-muted-foreground">
         {paths ? `paths within ${radius} yds of here` : `ending within ${radius} yds of here`}
-        {plays.length > 0 && ` · ${Math.round((100 * plays.length) / Math.max(1, total))}% of the ${total} on the field`}
+        {!versus && plays.length > 0 && ` · ${Math.round((100 * plays.length) / Math.max(1, total))}% of the ${total} on the field`}
       </div>
-      {sides && split && (
+      {sides && compare && (
         <table className="w-full text-[11px]">
           <thead>
             <tr className="text-muted-foreground">
               <th />
-              <th className="pb-1 text-right font-medium" style={{ color: COMPARE_A }}>{split.a} · {sides[0].length}</th>
-              <th className="pb-1 text-right font-medium" style={{ color: COMPARE_B }}>{split.b} · {sides[1].length}</th>
+              <th className="pb-1 text-right font-medium" style={{ color: COMPARE_A }}>{compare.a} · {sides[0].length}</th>
+              <th className="pb-1 text-right font-medium" style={{ color: COMPARE_B }}>{compare.b} · {sides[1].length}</th>
             </tr>
           </thead>
           <tbody>
