@@ -13,6 +13,7 @@ import { Field, type FieldHandle, type FieldView } from "@/components/app/Field"
 import { type ExportFormat, FieldToolbar, Legend, legendSpec } from "@/components/app/FieldToolbar"
 import { FilterPanel } from "@/components/app/FilterPanel"
 import { Header } from "@/components/app/Header"
+import { Analytics } from "@/components/app/Analytics"
 import { Insights } from "@/components/app/Insights"
 import { KpiGrid } from "@/components/app/Kpis"
 import { Landing } from "@/components/app/Landing"
@@ -537,6 +538,7 @@ export default function App() {
                 <Tabs defaultValue="insights" className="min-w-0">
                   <TabsList>
                     <TabsTrigger value="insights">Insights</TabsTrigger>
+                    <TabsTrigger value="analytics">Analytics</TabsTrigger>
                     <TabsTrigger value="plays">Plays</TabsTrigger>
                     <TabsTrigger value="games">Games</TabsTrigger>
                   </TabsList>
@@ -544,6 +546,9 @@ export default function App() {
                     <Insights kind={sel.kind} plays={visible} fieldPlays={onField} treePlays={treePlays}
                       route={one("tree_route")} onRoute={pickRoute} gap={pickedGap} onGap={pickGap} receiverPlays={receiverPlays}
                       receiver={(filters.receiver_player_name as { values?: string[] } | undefined)?.values?.[0] ?? null} onReceiver={pickReceiver} />
+                  </TabsContent>
+                  <TabsContent value="analytics" className="mt-3">
+                    <Analytics kind={sel.kind} plays={visible} jobId={job?.id} />
                   </TabsContent>
                   <TabsContent value="plays" className="mt-3">
                     <PlayTable kind={sel.kind} plays={visible} selectedId={selectedId} onSelect={setSelectedId} />

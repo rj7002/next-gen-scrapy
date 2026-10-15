@@ -1,0 +1,290 @@
+import { useEffect, useMemo, useState } from "react"
+import { Bar, BarChart, CartesianGrid, Cell, ComposedChart, Line, ReferenceLine, Scatter, ScatterChart, XAxis, YAxis, ZAxis } from "recharts"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { type ChartConfig, ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart"
+import { airYac, boxCounts, downDistance, epaSpread, fieldBoundary, pairs, reads, rollingForm } from "@/lib/analytics"
+import { api, type Kind, type Play } from "@/lib/api"
+import { epaColor, GAIN, OUTCOME } from "@/lib/colors"
+import { useReducedMotion } from "@/lib/motion"
+import { cn } from "@/lib/utils"
+import { landing } from "./Field"
+
+const POS = "#34d399"
+const NEG = "#fb7185"
+const axis = { tickLine: false, axisLine: false, tick: { fontSize: 11 } }
+const signed = (v: number | null, d = 2) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(d)}`)
+
+function Panel({ title, desc, children, className }: { title: string; desc?: string; children: React.ReactNode; className?: string }) {
+  return (
+    <Card className={cn("gap-3 border-border/60 bg-card/50 py-4", className)}>
+      <CardHeader className="px-4">
+        <CardTitle className="text-sm font-medium">{title}</CardTitle>
+        {desc && <CardDescription className="text-xs">{desc}</CardDescription>}
+      </CardHeader>
+      <CardContent className="px-2">{children}</CardContent>
+    </Card>
+  )
+}
+
+/** The Analytics tab: plots beyond the field - form, the spread of outcomes, down & distance, field vs boundary, and
+ * per-chart-kind ones (time to throw, YAC, reads, box counts, distance run). They follow the filters. A few use
+ * columns the play rows leave out; those are fetched for this job when the tab opens. */
+export function Analytics({ kind, plays, jobId }: { kind: Kind; plays: Play[]; jobId?: string }) {
+  const animate = !useReducedMotion()
+  const want = kind === "pass" ? ["air_epa", "yac_epa", "read_thrown"] : kind === "route" ? ["air_epa", "yac_epa"] : ["ngs_carrier_dist"]
+  const [extra, setExtra] = useState<{ job?: string; cols: Record<string, Record<string, unknown>> }>({ cols: {} })
+  useEffect(() => {
+    if (!jobId || extra.job === jobId) return
+    let cancelled = false
+    api.columns(jobId, want).then((cols) => !cancelled && setExtra({ job: jobId, cols })).catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [jobId, kind])
+  const ps = useMemo(() => {
+    const cols = extra.job === jobId ? Object.entries(extra.cols) : []
+    if (!cols.length) return plays
+    return plays.map((p) => ({ ...p, ...Object.fromEntries(cols.map(([c, v]) => [c, v[p.id] ?? null])) }))
+  }, [plays, extra, jobId])
+
+  const form = rollingForm(ps)
+  // one tick per week, at that week's first play
+  const weekTicks = form.points.filter((p, i, all) => i === 0 || all[i - 1].week !== p.week).map((p) => p.i)
+  const win = Math.min(form.window, form.total)
+  const spread = epaSpread(ps)
+  const dd = downDistance(ps)
+  const fb = fieldBoundary(ps, kind, landing)
+  const noun = kind === "pass" ? "throws" : kind === "route" ? "targets" : "carries"
+  const scale = kind === "carry" ? 10 : 6                       // EPA per play: rushing spans less than passing
+  const cellColor = (v: number | null) => epaColor(v == null ? null : Math.max(-3, Math.min(3, v * scale)))
+
+  return (
+    <div className="grid gap-3 md:grid-cols-2">
+      <Panel title="Form" desc={`EPA per play and success rate over a rolling ${win}-play window, through the season`}>
+        <ChartContainer config={{ epa: { label: "EPA / play", color: POS }, success: { label: "Success %", color: "#a78bfa" } }}
+          className="aspect-auto h-[210px] w-full">
+          <ComposedChart data={form.points} margin={{ left: 0, right: 8 }}>
+            <CartesianGrid vertical={false} strokeOpacity={0.15} />
+            <XAxis dataKey="i" type="number" domain={["dataMin", "dataMax"]} ticks={weekTicks} {...axis} minTickGap={14}
+              tickFormatter={(i: number) => { const w = form.points.find((p) => p.i === i)?.week ?? ""; return w.startsWith("post") ? "P" : w }} />
+            <YAxis yAxisId="epa" {...axis} width={38} />
+            <YAxis yAxisId="suc" orientation="right" {...axis} width={34} domain={[0, 100]} tickFormatter={(v: number) => `${v}%`} />
+            <ReferenceLine yAxisId="epa" y={0} strokeOpacity={0.3} />
+            <ChartTooltip content={<ChartTooltipContent labelFormatter={(_, p) => `Play ${p?.[0]?.payload?.i} · ${p?.[0]?.payload?.label}`} />} />
+            <Line yAxisId="epa" dataKey="epa" stroke="var(--color-epa)" dot={false} strokeWidth={2} isAnimationActive={animate} />
+            <Line yAxisId="suc" dataKey="success" stroke="var(--color-success)" dot={false} strokeWidth={1.5} strokeDasharray="4 3" isAnimationActive={animate} />
+            <ChartLegend content={<ChartLegendContent className="text-[11px]" />} />
+          </ComposedChart>
+        </ChartContainer>
+      </Panel>
+
+      <Panel title="Boom or bust" desc={`EPA per play: ${Math.round(100 * spread.boom)}% of plays +1 or better, ${Math.round(100 * spread.bust)}% −1 or worse (median ${signed(spread.median)})`}>
+        <ChartContainer config={{ n: { label: "Plays" } }} className="aspect-auto h-[210px] w-full">
+          <BarChart data={spread.bins} margin={{ left: 0, right: 8 }} barCategoryGap={1}>
+            <CartesianGrid vertical={false} strokeOpacity={0.15} />
+            <XAxis dataKey="label" {...axis} interval={1} />
+            <YAxis {...axis} width={30} />
+            <ChartTooltip cursor={{ fillOpacity: 0.06 }} content={<ChartTooltipContent labelFormatter={(l) => `EPA ${l} to ${(Number(l) + 0.5).toFixed(1)}`} />} />
+            <Bar dataKey="n" radius={2} isAnimationActive={animate}>
+              {spread.bins.map((b) => <Cell key={b.label} fill={b.x >= 1 ? POS : b.x < -1 ? NEG : "#71717a"} fillOpacity={b.x >= 0 ? 0.95 : 0.8} />)}
+            </Bar>
+          </BarChart>
+        </ChartContainer>
+      </Panel>
+
+      <Panel title="Down & distance" desc="EPA per play (colour) and how many plays, by down and yards to go">
+        <div className="overflow-x-auto px-2">
+          <table className="w-full min-w-[320px] border-separate border-spacing-1 text-xs">
+            <thead>
+              <tr className="text-muted-foreground">
+                <th />
+                {dd[0].cells.map((c) => <th key={c.label} className="font-medium">{c.label} to go</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {dd.map((r) => (
+                <tr key={r.down}>
+                  <td className="pr-2 text-right text-muted-foreground">{["", "1st", "2nd", "3rd", "4th"][r.down]}</td>
+                  {r.cells.map((c) => (
+                    <td key={c.label} className="rounded-md px-2 py-2 text-center"
+                      style={{ background: c.n ? `${cellColor(c.epa)}33` : undefined, boxShadow: c.n ? `inset 0 0 0 1px ${cellColor(c.epa)}55` : undefined }}>
+                      {c.n ? (
+                        <>
+                          <div className="font-mono text-sm font-medium" style={{ color: cellColor(c.epa) }}>{signed(c.epa)}</div>
+                          <div className="text-[10px] text-muted-foreground">{c.n} · {Math.round(100 * (c.success ?? 0))}% succ</div>
+                        </>
+                      ) : <span className="text-muted-foreground/50">—</span>}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+
+      <Panel title="Field vs boundary" desc={`${noun} to the wide side of the field, the middle, or the short side (from the hash the ball was on)`}>
+        <ChartContainer config={{ share: { label: `Share of ${noun}`, color: "#38bdf8" } }} className="aspect-auto h-[170px] w-full">
+          <BarChart data={fb.rows} layout="vertical" margin={{ left: 4, right: 12 }}>
+            <XAxis type="number" hide domain={[0, "dataMax"]} />
+            <YAxis type="category" dataKey="side" {...axis} width={70} />
+            <ChartTooltip cursor={{ fillOpacity: 0.06 }} content={<ChartTooltipContent formatter={(v, _n, item) =>
+              `${v}% · ${item.payload.n} ${noun} · EPA ${signed(item.payload.epa)} · ${kind === "carry" ? `${item.payload.rate} yds/carry` : `${item.payload.rate}% caught`}`} />} />
+            <Bar dataKey="share" radius={4} isAnimationActive={animate}>
+              {fb.rows.map((r) => <Cell key={r.side} fill={epaColor(Math.max(-3, Math.min(3, r.epa * scale)))} />)}
+            </Bar>
+          </BarChart>
+        </ChartContainer>
+        <div className="flex flex-wrap gap-x-5 gap-y-1 px-2 text-xs text-muted-foreground">
+          {fb.rows.map((r) => (
+            <span key={r.side}>{r.side}: <span className="font-mono text-foreground">{r.share}%</span> · EPA <span className="font-mono"
+              style={{ color: epaColor(Math.max(-3, Math.min(3, r.epa * scale))) }}>{signed(r.epa)}</span></span>
+          ))}
+          {fb.unknown > 0 && <span>{fb.unknown} without a hash or direction left out</span>}
+        </div>
+      </Panel>
+
+      {kind === "pass" && <TimeToThrow plays={ps} animate={animate} />}
+      {kind === "route" && <DepthYac plays={ps} animate={animate} />}
+      {kind !== "carry" && <AirYac plays={ps} kind={kind} animate={animate} />}
+      {kind === "pass" && <Reads plays={ps} animate={animate} />}
+      {kind === "carry" && <Boxes plays={ps} animate={animate} />}
+      {kind === "carry" && <DistanceRun plays={ps} animate={animate} />}
+    </div>
+  )
+}
+
+function TimeToThrow({ plays, animate }: { plays: Play[]; animate: boolean }) {
+  const pts = pairs(plays, "time_to_throw", "air_yards")
+  if (pts.length < 5) return null
+  const by = Object.keys(OUTCOME).map((o) => [o, pts.filter((p) => p.outcome === o)] as const).filter(([, v]) => v.length)
+  return (
+    <Panel title="Time to throw vs depth" desc="How long he held it, how far it went - colour is the result">
+      <ChartContainer config={Object.fromEntries(by.map(([o]) => [o, { label: o[0] + o.slice(1).toLowerCase(), color: OUTCOME[o] }])) satisfies ChartConfig}
+        className="aspect-auto h-[240px] w-full">
+        <ScatterChart margin={{ left: 0, right: 12 }}>
+          <CartesianGrid strokeOpacity={0.12} />
+          <XAxis type="number" dataKey="x" name="Time to throw" unit="s" {...axis} domain={["dataMin - 0.2", "dataMax + 0.2"]} tickFormatter={(v: number) => v.toFixed(1)} />
+          <YAxis type="number" dataKey="y" name="Air yards" {...axis} width={32} />
+          <ZAxis range={[22, 22]} />
+          <ReferenceLine y={0} strokeOpacity={0.3} />
+          <ReferenceLine x={2.5} strokeOpacity={0.25} strokeDasharray="3 3" label={{ value: "2.5s", fontSize: 10, fill: "#a1a1aa", position: "insideTopRight" }} />
+          <ChartTooltip content={<ChartTooltipContent formatter={(v, n) => `${n}: ${Number(v).toFixed(1)}`} />} />
+          {by.map(([o, v]) => <Scatter key={o} name={o} data={v} fill={OUTCOME[o]} fillOpacity={0.75} isAnimationActive={animate} />)}
+          <ChartLegend content={<ChartLegendContent className="text-[11px]" />} />
+        </ScatterChart>
+      </ChartContainer>
+    </Panel>
+  )
+}
+
+function DepthYac({ plays, animate }: { plays: Play[]; animate: boolean }) {
+  const pts = pairs(plays, "air_yards", "yards_after_catch", (p) => p.route_type === "COMPLETE")
+  if (pts.length < 3) return null
+  return (
+    <Panel title="Depth vs yards after catch" desc="Where he caught it and how much he added after - each dot a catch">
+      <ChartContainer config={{ y: { label: "YAC", color: POS } }} className="aspect-auto h-[240px] w-full">
+        <ScatterChart margin={{ left: 0, right: 12 }}>
+          <CartesianGrid strokeOpacity={0.12} />
+          <XAxis type="number" dataKey="x" name="Air yards" {...axis} />
+          <YAxis type="number" dataKey="y" name="YAC" {...axis} width={32} />
+          <ZAxis range={[30, 30]} />
+          <ChartTooltip content={<ChartTooltipContent formatter={(v, n) => `${n}: ${v}`} />} />
+          <Scatter data={pts} fill={POS} fillOpacity={0.8} isAnimationActive={animate} />
+        </ScatterChart>
+      </ChartContainer>
+    </Panel>
+  )
+}
+
+function AirYac({ plays, kind, animate }: { plays: Play[]; kind: Kind; animate: boolean }) {
+  const groups = airYac(plays, kind, (p) => (kind === "pass" ? (p.receiver_player_name as string) : (p.tree_route as string)) ?? null)
+  if (!groups.length) return null
+  return (
+    <Panel title="Air vs YAC value" desc={kind === "pass"
+      ? "On completions: EPA from the throw itself vs from the run after the catch, by receiver (totals)"
+      : "On his catches: EPA from the throw itself vs from the run after the catch, by route (totals)"}>
+      <ChartContainer config={{ air: { label: "Air EPA", color: "#38bdf8" }, yac: { label: "YAC EPA", color: "#f59e0b" } }}
+        className="aspect-auto h-[240px] w-full">
+        <BarChart data={groups} margin={{ left: 0, right: 8 }} stackOffset="sign">
+          <CartesianGrid vertical={false} strokeOpacity={0.15} />
+          <XAxis dataKey="name" {...axis} interval={0} tickFormatter={(s: string) => (s.length > 11 ? s.slice(0, 10) + "…" : /^[A-Z]+$/.test(s) ? s[0] + s.slice(1).toLowerCase() : s)} />
+          <YAxis {...axis} width={34} />
+          <ReferenceLine y={0} strokeOpacity={0.3} />
+          <ChartTooltip cursor={{ fillOpacity: 0.06 }} content={<ChartTooltipContent labelFormatter={(l, p) => `${l} · ${p?.[0]?.payload?.n} catches`} />} />
+          <Bar dataKey="air" stackId="v" fill="var(--color-air)" isAnimationActive={animate} />
+          <Bar dataKey="yac" stackId="v" fill="var(--color-yac)" radius={[3, 3, 0, 0]} isAnimationActive={animate} />
+          <ChartLegend content={<ChartLegendContent className="text-[11px]" />} />
+        </BarChart>
+      </ChartContainer>
+    </Panel>
+  )
+}
+
+function Reads({ plays, animate }: { plays: Play[]; animate: boolean }) {
+  const rows = reads(plays)
+  if (!rows.length) return null
+  return (
+    <Panel title="Reads" desc="Which read the ball went to (FTN charting): share of throws, colour is EPA per play">
+      <ChartContainer config={{ share: { label: "Share of throws" } }} className="aspect-auto h-[190px] w-full">
+        <BarChart data={rows} layout="vertical" margin={{ left: 4, right: 12 }}>
+          <XAxis type="number" hide />
+          <YAxis type="category" dataKey="label" {...axis} width={94} />
+          <ChartTooltip cursor={{ fillOpacity: 0.06 }} content={<ChartTooltipContent formatter={(v, _n, item) =>
+            `${v}% · ${item.payload.n} throws · ${item.payload.comp}% complete · EPA ${signed(item.payload.epa)}`} />} />
+          <Bar dataKey="share" radius={4} isAnimationActive={animate}>
+            {rows.map((r) => <Cell key={r.label} fill={epaColor(Math.max(-3, Math.min(3, r.epa * 6)))} />)}
+          </Bar>
+        </BarChart>
+      </ChartContainer>
+    </Panel>
+  )
+}
+
+function Boxes({ plays, animate }: { plays: Play[]; animate: boolean }) {
+  const rows = boxCounts(plays)
+  if (!rows.length) return null
+  return (
+    <Panel title="Box count" desc="Yards per carry (bars) and success rate (line) by defenders in the box">
+      <ChartContainer config={{ ypc: { label: "Yds / carry", color: POS }, success: { label: "Success %", color: "#a78bfa" } }}
+        className="aspect-auto h-[220px] w-full">
+        <ComposedChart data={rows} margin={{ left: 0, right: 8 }}>
+          <CartesianGrid vertical={false} strokeOpacity={0.15} />
+          <XAxis dataKey="label" {...axis} tickFormatter={(l: string) => `${l} in box`} />
+          <YAxis yAxisId="y" {...axis} width={30} />
+          <YAxis yAxisId="s" orientation="right" {...axis} width={34} domain={[0, 100]} tickFormatter={(v: number) => `${v}%`} />
+          <ChartTooltip cursor={{ fillOpacity: 0.06 }} content={<ChartTooltipContent labelFormatter={(l, p) => `${l} in the box · ${p?.[0]?.payload?.n} carries`} />} />
+          <Bar yAxisId="y" dataKey="ypc" fill="var(--color-ypc)" radius={4} isAnimationActive={animate} />
+          <Line yAxisId="s" dataKey="success" stroke="var(--color-success)" strokeWidth={2} isAnimationActive={animate} />
+          <ChartLegend content={<ChartLegendContent className="text-[11px]" />} />
+        </ComposedChart>
+      </ChartContainer>
+    </Panel>
+  )
+}
+
+function DistanceRun({ plays, animate }: { plays: Play[]; animate: boolean }) {
+  const pts = pairs(plays, "ngs_carrier_dist", "yards_gained")
+  if (pts.length < 5) return null
+  const ratio = pts.reduce((a, p) => a + p.x, 0) / Math.max(1, pts.reduce((a, p) => a + Math.max(0, p.y), 0))
+  const by = Object.keys(GAIN).map((g) => [g, pts.filter((p) => p.outcome === g)] as const).filter(([, v]) => v.length)
+  return (
+    <Panel title="Distance run vs yards gained" desc={`NGS distance the ball carrier ran for each yard gained: ${ratio.toFixed(1)} - lower is more north-south`}>
+      <ChartContainer config={Object.fromEntries(by.map(([g]) => [g, { label: { LOSS: "Loss", SHORT: "0-5 yds", LONG: "5+ yds" }[g] ?? g, color: GAIN[g] }])) satisfies ChartConfig}
+        className="aspect-auto h-[240px] w-full">
+        <ScatterChart margin={{ left: 0, right: 12 }}>
+          <CartesianGrid strokeOpacity={0.12} />
+          <XAxis type="number" dataKey="x" name="Distance run" unit=" yds" {...axis} />
+          <YAxis type="number" dataKey="y" name="Yards gained" {...axis} width={32} />
+          <ZAxis range={[22, 22]} />
+          <ReferenceLine y={0} strokeOpacity={0.3} />
+          <ReferenceLine segment={[{ x: 0, y: 0 }, { x: 60, y: 60 }]} strokeOpacity={0.25} strokeDasharray="4 3" />
+          <ChartTooltip content={<ChartTooltipContent formatter={(v, n) => `${n}: ${Number(v).toFixed(1)}`} />} />
+          {by.map(([g, v]) => <Scatter key={g} name={g} data={v} fill={GAIN[g]} fillOpacity={0.75} isAnimationActive={animate} />)}
+          <ChartLegend content={<ChartLegendContent className="text-[11px]" />} />
+        </ScatterChart>
+      </ChartContainer>
+    </Panel>
+  )
+}
+
