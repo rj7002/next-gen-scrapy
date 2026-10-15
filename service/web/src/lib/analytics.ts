@@ -146,3 +146,88 @@ export function reads(plays: Play[]) {
              epa: +(mean(m.map((p) => num(p.epa)).filter((v): v is number => v != null)) ?? 0).toFixed(3) }
   }).filter((r) => r.n > 0)
 }
+
+// ---------------------------------------------------------------- alignment (route charts) and the hole map (carries)
+// The ball's spot across the field: the FTN hash it was snapped from (2022+), or - for a carry from under center - the
+// back's own start, right behind the ball. Chart x is yards from the middle of the field, offense's left negative.
+const HASH_X: Record<string, number> = { L: -3.08, M: 0, R: 3.08 }
+const arr = (v: unknown): number[] => (Array.isArray(v) ? (v as number[]) : [])
+
+function ballX(p: Play, kind: Kind): number | null {
+  const h = HASH_X[String(p.starting_hash)]
+  if (h != null) return h
+  if (kind === "carry" && (p.shotgun === false || p.shotgun === 0 || p.shotgun === "0")) return arr(p.path_x)[0] ?? null
+  return null
+}
+
+export type Align = "slot" | "wide" | "inline" | "backfield"
+export const ALIGN_LABEL: Record<Align, string> = { slot: "Slot / tight split", wide: "Wide", inline: "Inline / tight", backfield: "Backfield" }
+export const ALIGNS: Align[] = ["wide", "slot", "inline", "backfield"]
+
+/** where a targeted receiver lined up: his route's start, against the ball (needs a clean start and the hash) */
+export function alignmentOf(p: Play): Align | null {
+  if (!truthy(p.start_ok)) return null
+  const xs = arr(p.path_x), ys = arr(p.path_y)
+  const b = HASH_X[String(p.starting_hash)]
+  if (!xs.length || b == null) return null
+  if (ys[0] < -2.5) return "backfield"
+  const dx = Math.abs(xs[0] - b)
+  return dx < 4.5 ? "inline" : dx < 10 ? "slot" : "wide"
+}
+
+export function alignment(plays: Play[]) {
+  const known = plays.filter((p) => p.matched && alignmentOf(p))
+  const rows = ALIGNS.map((a) => {
+    const ps = known.filter((p) => alignmentOf(p) === a)
+    return { key: a, label: ALIGN_LABEL[a], n: ps.length, share: known.length ? ps.length / known.length : 0,
+             epa: mean(ps.map((p) => num(p.epa)).filter((v): v is number => v != null)),
+             catch: ps.length ? ps.filter((p) => p.route_type === "COMPLETE").length / ps.length : null,
+             adot: mean(ps.map((p) => num(p.air_yards)).filter((v): v is number => v != null)) }
+  })
+  const wk = new Map<string, Play[]>()
+  for (const p of chronological(known)) wk.set(String(p.week), [...(wk.get(String(p.week)) ?? []), p])
+  const weekly = [...wk.entries()].map(([w, ps]) => ({
+    week: w.startsWith("post") ? weekLabel(w) : `W${w}`, n: ps.length,
+    ...Object.fromEntries(ALIGNS.map((a) => [a, Math.round((100 * ps.filter((p) => alignmentOf(p) === a).length) / ps.length)])),
+  }))
+  return { rows, weekly, known: known.length, unknown: plays.filter((p) => p.matched).length - known.length }
+}
+
+/** where a run crossed the line of scrimmage, yards from the ball (negative = offense's left) */
+export function holeOf(p: Play): number | null {
+  const xs = arr(p.path_x), ys = arr(p.path_y)
+  const b = ballX(p, "carry")
+  if (xs.length < 2 || b == null) return null
+  const i = ys.findIndex((y) => y >= 0)
+  if (i <= 0) return null
+  const t = ys[i] !== ys[i - 1] ? (0 - ys[i - 1]) / (ys[i] - ys[i - 1]) : 0
+  return xs[i - 1] + t * (xs[i] - xs[i - 1]) - b
+}
+
+export const OUTSIDE = 5      // yards from the ball: outside the tackles
+
+export function holes(plays: Play[]) {
+  const runs = plays.filter((p) => p.matched && !truthy(p.implausible)).map((p) => ({ p, h: holeOf(p) })).filter((r) => r.h != null) as
+    { p: Play; h: number }[]
+  const bins = Array.from({ length: 40 }, (_, i) => ({ x: i - 20, n: 0, epa: [] as number[] }))
+  for (const r of runs) {
+    const b = bins[Math.min(39, Math.max(0, Math.floor(r.h) + 20))]
+    b.n++
+    const e = num(r.p.epa)
+    if (e != null) b.epa.push(e)
+  }
+  const side = (out: boolean) => runs.filter((r) => (Math.abs(r.h) >= OUTSIDE) === out)
+  const stat = (rs: { p: Play }[]) => ({
+    n: rs.length, epa: mean(rs.map((r) => num(r.p.epa)).filter((v): v is number => v != null)),
+    ypc: mean(rs.map((r) => num(r.p.yards_gained)).filter((v): v is number => v != null)),
+  })
+  const label = (p: Play) => (p.run_location === "middle" ? "middle" : (p.run_gap as string) || null)
+  const byGap = ["middle", "guard", "tackle", "end"].map((g) => {
+    const hs = runs.filter((r) => label(r.p) === g).map((r) => Math.abs(r.h)).sort((a, b) => a - b)
+    return { gap: g, n: hs.length, median: hs.length ? hs[Math.floor(hs.length / 2)] : null }
+  })
+  return { runs: runs.length, missing: plays.filter((p) => p.matched).length - runs.length,
+           bins: bins.map((b) => ({ x: b.x, n: b.n, share: runs.length ? b.n / runs.length : 0, epa: mean(b.epa) })),
+           outside: runs.length ? side(true).length / runs.length : null, inside: stat(side(false)), out: stat(side(true)), byGap,
+           left: runs.length ? runs.filter((r) => r.h < -1).length / runs.length : null }
+}

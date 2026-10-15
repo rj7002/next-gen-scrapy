@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react"
 import { Bar, BarChart, CartesianGrid, Cell, ComposedChart, Line, ReferenceLine, Scatter, ScatterChart, XAxis, YAxis, ZAxis } from "recharts"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { type ChartConfig, ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart"
-import { airYac, boxCounts, downDistance, epaSpread, fieldBoundary, pairs, reads, rollingForm } from "@/lib/analytics"
+import { airYac, ALIGNS, type Align, alignment, boxCounts, downDistance, epaSpread, fieldBoundary, holes, OUTSIDE, pairs, reads,
+  rollingForm } from "@/lib/analytics"
 import { api, type Kind, type Play } from "@/lib/api"
 import { epaColor, GAIN, OUTCOME } from "@/lib/colors"
 import { useReducedMotion } from "@/lib/motion"
@@ -145,6 +146,8 @@ export function Analytics({ kind, plays, jobId }: { kind: Kind; plays: Play[]; j
       </Panel>
 
       {kind === "pass" && <TimeToThrow plays={ps} animate={animate} />}
+      {kind === "route" && <Alignment plays={ps} animate={animate} />}
+      {kind === "carry" && <HoleMap plays={ps} />}
       {kind === "route" && <DepthYac plays={ps} animate={animate} />}
       {kind !== "carry" && <AirYac plays={ps} kind={kind} animate={animate} />}
       {kind === "pass" && <Reads plays={ps} animate={animate} />}
@@ -288,3 +291,161 @@ function DistanceRun({ plays, animate }: { plays: Play[]; animate: boolean }) {
   )
 }
 
+
+const ALIGN_COLOR: Record<Align, string> = { wide: "#38bdf8", slot: "#a78bfa", inline: "#f59e0b", backfield: "#34d399" }
+const pct = (v: number | null | undefined) => (v == null ? "—" : `${Math.round(100 * v)}%`)
+
+function Alignment({ plays, animate }: { plays: Play[]; animate: boolean }) {
+  const a = alignment(plays)
+  if (a.known < 5) {
+    return (
+      <Panel title="Alignment" desc="Where he lined up on his targets">
+        <p className="px-2 text-xs text-muted-foreground">
+          {a.known ? "Too few targets with a clean route start." : "Needs the ball's hash (FTN charting, 2022 on) and a cleanly traced route start."}
+        </p>
+      </Panel>
+    )
+  }
+  return (
+    <Panel title="Alignment" className="md:col-span-2"
+      desc={`Where he lined up on his ${a.known} targets, from where each route starts against the ball (targeted routes only, not every snap)`}>
+      <div className="grid gap-4 px-2 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-left text-[11px] text-muted-foreground">
+              <th className="pb-2 font-medium">Lined up</th>
+              <th className="pb-2 font-medium">Share of targets</th>
+              <th className="pb-2 text-right font-medium">Tgt</th>
+              <th className="pb-2 text-right font-medium">EPA / tgt</th>
+              <th className="pb-2 text-right font-medium">Catch %</th>
+              <th className="pb-2 text-right font-medium">aDOT</th>
+            </tr>
+          </thead>
+          <tbody>
+            {a.rows.map((r) => {
+              return (
+                <tr key={r.key} className="border-t border-border/40">
+                  <td className="py-2 pr-2 whitespace-nowrap">
+                    <span className="mr-1.5 inline-block size-2 rounded-full" style={{ background: ALIGN_COLOR[r.key] }} />{r.label}
+                  </td>
+                  <td className="py-2 pr-3">
+                    <div className="flex items-center gap-2">
+                      <div className="h-2 w-28 rounded-full bg-muted">
+                        <div className="h-full rounded-full" style={{ width: `${100 * r.share}%`, background: ALIGN_COLOR[r.key] }} />
+                      </div>
+                      <span className="font-mono text-[11px] text-muted-foreground">{pct(r.share)}</span>
+                    </div>
+                  </td>
+                  <td className="py-2 text-right font-mono">{r.n}</td>
+                  <td className="py-2 text-right font-mono">
+                    <span style={{ color: r.epa == null ? undefined : epaColor(Math.max(-3, Math.min(3, r.epa * 6))) }}>{r.n ? signed(r.epa) : "—"}</span>
+                  </td>
+                  <td className="py-2 text-right font-mono">{r.n ? pct(r.catch) : "—"}</td>
+                  <td className="py-2 text-right font-mono">{r.adot == null ? "—" : r.adot.toFixed(1)}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+        <div>
+          <div className="mb-1 text-xs text-muted-foreground">By week (share of his targets)</div>
+          <ChartContainer config={Object.fromEntries(ALIGNS.map((k) => [k, { label: k === "slot" ? "Slot" : k[0].toUpperCase() + k.slice(1), color: ALIGN_COLOR[k] }])) satisfies ChartConfig}
+            className="aspect-auto h-[200px] w-full">
+            <BarChart data={a.weekly} margin={{ left: 0, right: 8 }}>
+              <CartesianGrid vertical={false} strokeOpacity={0.15} />
+              <XAxis dataKey="week" {...axis} interval={a.weekly.length > 12 ? "preserveStartEnd" : 0} />
+              <YAxis {...axis} width={42} domain={[0, 100]} ticks={[0, 50, 100]} tickFormatter={(v: number) => `${v}%`} />
+              <ChartTooltip cursor={{ fillOpacity: 0.06 }} content={<ChartTooltipContent labelFormatter={(l, p) => `${l} · ${p?.[0]?.payload?.n} targets`} />} />
+              {ALIGNS.map((k) => <Bar key={k} dataKey={k} stackId="a" fill={ALIGN_COLOR[k]} isAnimationActive={animate} />)}
+              <ChartLegend content={<ChartLegendContent className="text-[11px]" />} />
+            </BarChart>
+          </ChartContainer>
+        </div>
+      </div>
+      <p className="mt-2 px-2 text-[11px] text-muted-foreground">
+        Slot / tight split = 4.5-10 yds from the ball; wide = farther; inline = closer; backfield = starting 2.5+ yds behind the line.
+        An outside receiver in a tight split counts as slot here - the charts don't show who lined up outside him.
+        {a.unknown > 0 && ` ${a.unknown} targets without a hash or a clean start are left out.`}
+      </p>
+    </Panel>
+  )
+}
+
+/** the line of scrimmage, seen from behind the offense: where his runs crossed it */
+function HoleMap({ plays }: { plays: Play[] }) {
+  const h = holes(plays)
+  if (h.runs < 5) {
+    return (
+      <Panel title="Hole map" desc="Where his runs crossed the line of scrimmage">
+        <p className="px-2 text-xs text-muted-foreground">Too few runs with a traced line and the ball's spot.</p>
+      </Panel>
+    )
+  }
+  const W = 640, H = 210, X0 = 30, X1 = W - 30, base = 150, top = 22
+  const lo = -15, hi = 15
+  const sx = (x: number) => X0 + ((x - lo) / (hi - lo)) * (X1 - X0)
+  const view = h.bins.filter((b) => b.x >= lo && b.x < hi)
+  const edgeL = h.bins.filter((b) => b.x < lo), edgeR = h.bins.filter((b) => b.x >= hi)
+  const max = Math.max(...view.map((b) => b.share), 0.01)
+  const sy = (v: number) => base - (v / max) * (base - top)
+  const colorOf = (e: number | null) => epaColor(e == null ? null : Math.max(-3, Math.min(3, e * 10)))
+  const OL: [number, string][] = [[-2.9, "LT"], [-1.45, "LG"], [0, "C"], [1.45, "RG"], [2.9, "RT"]]
+  const side = (n: number) => edgeL.concat(edgeR).some((b) => b.n > 0) && n
+  return (
+    <Panel title="Hole map" className="md:col-span-2"
+      desc={`Where his ${h.runs} runs crossed the line of scrimmage, yards from the ball - bar height is the share of his runs, colour is EPA per run`}>
+      <div className="px-2">
+        <svg viewBox={`0 0 ${W} ${H}`} className="mx-auto w-full max-w-[820px]" role="img" aria-label="Hole map">
+          <rect x={sx(-OUTSIDE)} y={top - 8} width={sx(OUTSIDE) - sx(-OUTSIDE)} height={base - top + 8} className="fill-muted/40" rx={4} />
+          <text x={sx(0)} y={top - 11} textAnchor="middle" className="fill-muted-foreground text-[10px]">inside the tackles</text>
+          <text x={sx(-10)} y={top - 11} textAnchor="middle" className="fill-muted-foreground text-[10px]">outside left</text>
+          <text x={sx(10)} y={top - 11} textAnchor="middle" className="fill-muted-foreground text-[10px]">outside right</text>
+          {view.map((b) => {
+            const x = sx(b.x), w = sx(b.x + 1) - x - 1.5
+            return b.n > 0 && (
+              <rect key={b.x} x={x + 0.75} y={sy(b.share)} width={w} height={base - sy(b.share)} rx={2} fill={colorOf(b.epa)}
+                fillOpacity={Math.min(1, 0.45 + b.n / 12)}>
+                <title>{`${b.x} to ${b.x + 1} yds: ${b.n} runs (${pct(b.share)}), EPA ${signed(b.epa)}`}</title>
+              </rect>
+            )
+          })}
+          <line x1={X0} x2={X1} y1={base} y2={base} className="stroke-sky-400" strokeWidth={2} />
+          {OL.map(([x, n]) => (
+            <g key={n}>
+              <circle cx={sx(x)} cy={base + 16} r={9} className="fill-slate-600 stroke-card" strokeWidth={1.5} />
+              <text x={sx(x)} y={base + 19.5} textAnchor="middle" className="fill-white text-[8px] font-semibold">{n}</text>
+            </g>
+          ))}
+          {[-15, -10, -5, 0, 5, 10, 15].map((t) => (
+            <text key={t} x={sx(t)} y={H - 6} textAnchor="middle" className="fill-muted-foreground font-mono text-[10px]">{t > 0 ? `+${t}` : t}</text>
+          ))}
+          {side(1) ? <text x={X1} y={base + 34} textAnchor="end" className="fill-muted-foreground text-[9px]">
+            {edgeL.reduce((a, b) => a + b.n, 0) + edgeR.reduce((a, b) => a + b.n, 0)} beyond ±15</text> : null}
+        </svg>
+        <div className="mt-1 grid gap-x-6 gap-y-2 text-xs sm:grid-cols-3">
+          <div><div className="text-muted-foreground">Outside the tackles</div>
+            <div className="font-mono text-sm">{pct(h.outside)}</div></div>
+          <div><div className="text-muted-foreground">Inside: EPA / yds per run</div>
+            <div className="font-mono text-sm">{signed(h.inside.epa)} / {h.inside.ypc?.toFixed(1) ?? "—"} <span className="text-[11px] text-muted-foreground">· {h.inside.n} runs</span></div></div>
+          <div><div className="text-muted-foreground">Outside: EPA / yds per run</div>
+            <div className="font-mono text-sm">{signed(h.out.epa)} / {h.out.ypc?.toFixed(1) ?? "—"} <span className="text-[11px] text-muted-foreground">· {h.out.n} runs</span></div></div>
+        </div>
+        <div className="mt-3 text-xs">
+          <div className="mb-1 text-muted-foreground">Called vs where he hit - median yards from the ball, by the gap play-by-play recorded</div>
+          <div className="flex flex-wrap gap-2">
+            {h.byGap.filter((g) => g.n > 0).map((g) => (
+              <span key={g.gap} className="rounded-md border border-border/60 px-2 py-1">
+                <span className="capitalize">{g.gap}</span>{" "}
+                <span className="font-mono">{g.median?.toFixed(1)}</span>
+                <span className="text-muted-foreground"> · {g.n}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+        {h.missing > 0 && <p className="mt-2 text-[11px] text-muted-foreground">
+          {h.missing} runs left out: no traced line across the line of scrimmage, or no spot for the ball (before 2022 only runs from
+          under center have one).</p>}
+      </div>
+    </Panel>
+  )
+}
