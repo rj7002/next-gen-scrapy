@@ -9,7 +9,7 @@ export const MODELS = {
   tiny: { id: "Qwen2.5-0.5B-Instruct-q4f16_1-MLC", label: "Qwen 2.5 0.5B", size: "~0.3 GB" },
   mid: { id: "Qwen2.5-3B-Instruct-q4f16_1-MLC", label: "Qwen 2.5 3B", size: "~1.7 GB" },
   big: { id: "Qwen2.5-7B-Instruct-q4f16_1-MLC", label: "Qwen 2.5 7B", size: "~4.3 GB" },
-  ft: { id: "ngs-ask-0.5b-q4f16_1", label: "NGS Ask 0.5B (fine-tuned)", size: "~280 MB" },
+  ft: { id: "field-ask-0.5b-v3-q4f16_1", label: "Field Ask 0.5B (fine-tuned)", size: "~280 MB" },
 } as const
 export type ModelKey = keyof typeof MODELS
 
@@ -39,7 +39,7 @@ export function modelKey(): ModelKey {
 
 // Qwen 2.5 0.5B fine-tuned on the Ask bar's own task: same architecture as WebLLM's prebuilt 0.5B, so it runs on
 // that model's compiled library and only the weights (~270 MB) are ours
-const FT_URL = QS.get("nlurl") ?? "https://huggingface.co/rj7002/ngs-ask-0.5b-MLC"
+const FT_URL = QS.get("nlurl") ?? "https://huggingface.co/rj7002/field-ask-0.5b-v3-MLC"
 const FT_LIB = "https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/web-llm-models/v0_2_84/base/Qwen2-0.5B-Instruct-q4f16_1_cs1k-webgpu.wasm"
 
 export function modelStatus(): ModelStatus {

@@ -406,8 +406,10 @@ export default function App() {
       parts.push(`colored by ${({ epa: "EPA", route: "route type", down: "down", confidence: "match confidence" } as Record<string, string>)[colorBy] ?? colorBy}`)
     if (v === "heat" && sel.kind !== "pass") parts.push(heatOf === "end" ? (sel.kind === "route" ? "catch points" : "end points") : "whole paths")
     if (v === "heat" && heatMetric === "compare") {
-      const sp = splitOf(sel.kind, heatSplit)
-      parts.push(`where ${sp.a} vs ${sp.b} plays go, each as a share of its own`)
+      const noun = KIND_NOUN[sel.kind][1]
+      const [a, b] = versus ? [versus.mine, versus.other] : [splitOf(sel.kind, heatSplit).a, splitOf(sel.kind, heatSplit).b]
+      parts.push(versus ? `${a}'s ${noun} (blue) compared with ${b}'s (orange), each as a share of its own`
+        : `${noun} ${a} (blue) compared with ${noun} ${b} (orange), each as a share of its own`)
     } else if (v === "heat" && heatMetric !== "volume") parts.push(`coloured by ${METRICS[sel.kind].find(([m]) => m === heatMetric)?.[1]}, faded where plays are few`)
     if (v === "plays" && yac && sel.kind === "pass") parts.push("YAC lines straight downfield from the catch")
     if (v === "plays" && !routeYac && sel.kind === "route") parts.push("routes up to the catch")
