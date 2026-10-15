@@ -439,14 +439,19 @@ class RuleParser:
         self.rule(r"\bshort[ -]yardage\b", lambda m: self.set("ydstogo", "lte", 2))
         self.rule(r"\blong[ -]yardage\b|\band long\b", lambda m: self.set("ydstogo", "gte", 7))
         self.rule(r"\band short\b", lambda m: self.set("ydstogo", "lte", 2))
-        self.rule(rf"\b{NUM}\s*(?:\+|or more)?\s*(?:yards?|yds)?\s+to go\b",
-                  lambda m: self.set("ydstogo", "gte" if re.search(r"\+|more", m.group(0)) else "eq", int(float(m.group(1)))))
+        # "under 3 to go" -> at most; "at least 15 to go" / "15+ to go" / "10 or more yards to go" -> at least; "4 to go" -> exactly
+        self.rule(rf"\b(?:under|less than|fewer than|at most)\s+{NUM}\s*(?:yards?|yds)?\s+to go\b",
+                  lambda m: self.set("ydstogo", "lte", int(float(m.group(1)))))
+        self.rule(rf"(?:\b(?:at least|over|more than)\s+)?\b{NUM}\s*(?:\+|or more)?\s*(?:yards?|yds)?\s+to go\b",
+                  lambda m: self.set("ydstogo", "gte" if re.search(r"\+|more|least|over", m.group(0)) else "eq", int(float(m.group(1)))))
         self.rule(r"\bgoal[ -]to[ -]go\b", lambda m: self.set("goal_to_go", "eq", "true"))
 
     def field_position(self):
         self.rule(r"\bred ?zone\b", lambda m: self.set("yardline_100", "lte", 20))
         self.rule(r"\b(?:goal ?line|goal-line)\b", lambda m: self.set("yardline_100", "lte", 5))
-        self.rule(r"\binside (?:the |their |its |his |opponent'?s? )?(\d{1,2})\b",
+        self.rule(r"\binside (?:the |their |its |his )?(?:(?:opponent|opp|other team)'?s? )?(\d{1,2})\b",
+                  lambda m: self.set("yardline_100", "lte", int(m.group(1))))
+        self.rule(r"\b(?:within|inside of|less than)\s+(\d{1,2})\s+(?:yards?|yds)\s+(?:of|from)\s+(?:the\s+)?(?:end ?zone|goal ?line|pylon)\b",
                   lambda m: self.set("yardline_100", "lte", int(m.group(1))))
         self.rule(r"\b(?:backed up|own end ?zone)\b", lambda m: self.set("yardline_100", "gte", 90))
         self.rule(r"\b(?:own territory|own side(?: of the field)?|own half)\b",
@@ -614,7 +619,7 @@ class RuleParser:
         self.rule(r"\bprevent(?: defense)?\b", lambda m: self.set("defense_coverage_type", "in", ["PREVENT"]))
         self.rule(r"\b(?:man[ -]to[ -]man|man)(?: coverage| defense)?\b",
                   lambda m: self.set("defense_man_zone_type", "in", ["MAN_COVERAGE"]))
-        self.rule(r"\bzone(?: coverage| defense)?\b", lambda m: self.set("defense_man_zone_type", "in", ["ZONE_COVERAGE"]))
+        self.rule(r"(?<!end )(?<!end-)(?<!red )\bzone(?: coverage| defense)?\b", lambda m: self.set("defense_man_zone_type", "in", ["ZONE_COVERAGE"]))
         self.rule(r"\b(?:clean pocket|kept clean|no pressure|without pressure|not pressured|unpressured)\b",
                   lambda m: self.set("was_pressure", "eq", "false"))
         self.rule(r"\b(?:under pressure|pressured|pressure)\b", lambda m: self.set("was_pressure", "eq", "true"))
@@ -737,9 +742,9 @@ def _validate(p: Parse, current: str, dyn: dict | None = None):
         p.dataset = ds = "routes"
         p.notes.append("Pass charts are per quarterback, so this shows the receivers' routes instead.")
     allowed = {f["col"] for f in for_table(ds)}
-    # choice filters are always multi-select in the UI: normalise `col=x` to `col__in=x`
+    # choice / select filters are picks in the UI: normalise `col=x` to `col__in=x`
     for key in list(p.params):
-        if "__" not in key and BY_COL.get(key, {}).get("kind") == "choice":
+        if "__" not in key and BY_COL.get(key, {}).get("kind") in ("choice", "select"):
             p.params[key + "__in"] = p.params.pop(key)
     for key in list(p.params):
         col = key.split("__")[0]

@@ -234,6 +234,7 @@ FILTERS += [
     A("air_epa", "Air EPA", "Passing", "range", tables=PASSING, step=0.1),
     A("yac_epa", "YAC EPA", "Passing", "range", tables=PASSING, step=0.1),
     A("cpoe", "CPOE", "Passing", "range", tables=PASSING, help="completion % over expected, per throw"),
+    A("end_zone_target", "Thrown into the end zone", "Passing", "bool", tables=PASSING, help="air yards reach the goal line"),
     A("xyac_mean_yardage", "Expected YAC", "Passing", "range", tables=PASSING, step=0.5),
     A("yac_over_expected", "YAC over expected", "Passing", "range", tables=PASSING, step=0.5),
     A("read_thrown", "Read thrown", "Passing", "choice", tables=PASSING, choices=[

@@ -26,6 +26,9 @@ LE = r"(?:under|less than|fewer than|below|at most|<=?)"
 
 # yes / no columns: (phrases meaning yes, phrases meaning no)
 BOOL = {
+    "end_zone_target": (r"end[ -]?zone (?:targets?|throws?|passes|shots?|looks|attempts|balls|fades?)|"
+                        r"(?:targets?|throws?|passes|shots?|looks|balls|attempts) (?:in|into|to) the end[ -]?zone|"
+                        r"(?:targeted|thrown) (?:in|into) the end[ -]?zone", None),
     "penalty": (r"penalt(?:y|ies)|flags?|flagged|called back|drew a flag",
                 r"no (?:penalty|penalties|flags?)|without (?:a )?(?:penalty|flag)|clean plays?|unflagged"),
     "third_down_converted": (r"(?:3rd|third)[ -]down conversions?|converted (?:on )?(?:3rd|third)(?: downs?)?|"
@@ -99,7 +102,7 @@ RANGE = [
     (r"(?:mph|miles? (?:an|per) hour)", "ngs_top_speed", 1),
     (r"(?:play|plays)[ -](?:long )?drives?|plays? drives?", "drive_play_count", 1),
     (r"(?:penalty yards|yards? (?:penalty|penalties|flags?))", "penalty_yards", 1),
-    (r"(?:expected points|ep)", "ep", 1),
+    (r"(?:expected points before the snap|pre[ -]?snap (?:ep|expected points)|starting ep|ep before the snap)", "ep", 1),
     (r"(?:% |percent )?completion probability|cp", "cp", 0.01),
     (r"(?:% |percent )?(?:pass|passing) probability|xpass", "xpass", 0.01),
     (r"(?:% |percent )?(?:wpa|win probability added)", "wpa", 0.01),
@@ -207,7 +210,8 @@ def catalog_rules(rp) -> None:
     for col, (yes, no) in BOOL.items():
         if no:
             rp.rule(rf"\b(?:{no})\b", setter(col, "eq", "false"))
-        rp.rule(rf"\b(?:(?:no|non|not|without)[ -])(?:{yes})\b", setter(col, "eq", "false"))
+        rp.rule(rf"\b(?:(?:no|non|not|without|never)[ -]|(?:weren'?t|wasn'?t|were not|was not|didn'?t (?:get|draw|have))\s+(?:a |an |any )?)(?:{yes})\b",
+                setter(col, "eq", "false"))
         rp.rule(rf"\b(?:{yes})\b", setter(col, "eq", "true"))
 
     # numbers on the catalog's range columns: "N+ <noun>", "<cmp> N <noun>", "<noun> <cmp> N"

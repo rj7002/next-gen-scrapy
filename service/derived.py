@@ -47,6 +47,10 @@ DERIVED = {
     "yac_over_expected": lambda f: (pd.to_numeric(f["yards_after_catch"], errors="coerce")
                                     - pd.to_numeric(f["xyac_mean_yardage"], errors="coerce")).round(1)
                                    if {"yards_after_catch", "xyac_mean_yardage"} <= set(f.columns) else None,
+    "end_zone_target": lambda f: (pd.Series(np.where(pd.to_numeric(f["air_yards"], errors="coerce").isna(), None,
+                                                      pd.to_numeric(f["air_yards"], errors="coerce")
+                                                      >= pd.to_numeric(f["yardline_100"], errors="coerce")), index=f.index, dtype=object)
+                                  if {"air_yards", "yardline_100"} <= set(f.columns) else None),
     "ngs_top_speed": lambda f: pd.to_numeric(f["ngs_max_speed"], errors="coerce").round(1)   # NGS gives mph
                                if "ngs_max_speed" in f else None,
 }
