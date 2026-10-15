@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge"
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet"
 import { Skeleton } from "@/components/ui/skeleton"
 import { api, type Kind, type Person, type Play, type PlayDetailData, unmatchedText, weekLabel } from "@/lib/api"
+import { lineNote } from "@/lib/stats"
 import { confColor, GAIN, OUTCOME, ROUTE_COLORS, ROUTE_LINE } from "@/lib/colors"
 import { pretty } from "@/lib/filters"
 import { cn } from "@/lib/utils"
@@ -57,11 +58,14 @@ export function PlayPanel({ jobId, play, kind, onClose }: { jobId?: string; play
                   {kind !== "carry" && <GameCenter d={d} play={play} />}
                   {kind === "route" && d.chart.route_guess?.length > 0 && <RouteGuess guess={d.chart.route_guess} ngs={d.scheme?.target_route} />}
                   {play.estimated ? (
-                    <Section title="Location">
-                      <p className="text-xs leading-relaxed text-muted-foreground">Not drawn by Next Gen Stats. Its spot is estimated from play-by-play air yards and direction: depth is usually within a yard, but across the field it's only known to the side.</p>
+                    <Section title={kind === "pass" ? "Location" : "Chart line"}>
+                      <p className="text-xs leading-relaxed text-muted-foreground">{lineNote(kind, play)}</p>
                     </Section>
                   ) : (
-                    <Match d={d} />
+                    <>
+                      {lineNote(kind, play) && <p className="text-xs leading-relaxed text-muted-foreground">{lineNote(kind, play)}</p>}
+                      <Match d={d} />
+                    </>
                   )}
                   <Drive d={d} />
                 </>

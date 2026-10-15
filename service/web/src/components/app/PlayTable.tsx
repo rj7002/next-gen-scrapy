@@ -32,7 +32,7 @@ export function PlayTable({ kind, plays, selectedId, onSelect }: { kind: Kind; p
     list.push(
       { key: "epa", label: "EPA", get: (p) => p.epa ?? -99, render: (p) => (p.epa == null ? "—" : <span className={cn("font-mono", p.epa >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400")}>{p.epa > 0 ? "+" : ""}{Number(p.epa).toFixed(2)}</span>) },
       { key: "conf", label: "Match", get: (p) => p.location_prob ?? -1,
-        render: (p) => (p.estimated ? <span className="text-muted-foreground">not drawn</span> : <Conf p={p.location_prob} />) },
+        render: (p) => (p.estimated ? <span className="text-muted-foreground">{kind === "pass" ? "not drawn" : p.lateral ? "lateral" : "no line"}</span> : <Conf p={p.location_prob} />) },
       { key: "desc", label: "Play", get: (p) => p.desc ?? "", render: (p) => <span className="line-clamp-1 text-muted-foreground">{p.desc ?? "unmatched chart line"}</span>, cls: "max-w-[420px]" },
     )
     return list

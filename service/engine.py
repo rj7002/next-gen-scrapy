@@ -395,6 +395,7 @@ EXTRA = {
     "carry": ["gain_class", "chart_touchdown", "chart_fumble_lost", "handoff_ok", "gap", "rush_touchdown",
               "path_x", "path_y"],
 }
+OFFICIAL = ["player_yards", "player_td", "in_log"]   # _official: what each play adds to the player's game log
 
 
 def _clean(v):
@@ -430,6 +431,65 @@ def _week(week, season_type) -> str | None:
 def _path(v, digits=2):
     a = np.asarray(v, float) if v is not None else np.zeros(0)
     return [round(float(x), digits) for x in a]
+
+
+START_LIMIT = {"route": 1.0, "carry": 0.5}   # a traced start past this (yd beyond the line of scrimmage) wasn't the start
+LOS_EXTEND = 3.0       # yd: a start this close to the line hid under the LOS stripe or another line - drawn back to it
+EXTEND_STEP = 0.5      # yd between the added points (the readers' resampling step)
+
+
+def _from_los(kind: str, xs, ys, seg=None):
+    """
+    A route / carry line as drawn, made to start at the line of scrimmage: every route and run does, but where its
+    first yard or two hides under the LOS stripe or under other lines, the reader picks it up just past the line.
+    Such a line is drawn back to the line along its own first direction (straight back if that's sideways). A line
+    whose trace starts further out is a piece of a line the reader couldn't follow, not a whole route / run: it isn't
+    drawn at all (None) - the play keeps its play-by-play details. Returns (xs, ys, seg, extended).
+    """
+    x = np.asarray(xs if xs is not None else [], float)
+    y = np.asarray(ys if ys is not None else [], float)
+    seg = list(seg) if seg is not None else None
+    if len(y) < 2 or y[0] <= START_LIMIT[kind]:
+        return x, y, seg, False
+    if y[0] > LOS_EXTEND:
+        return None
+    walked = np.concatenate([[0.0], np.hypot(np.diff(x), np.diff(y)).cumsum()])
+    j = min(int(np.searchsorted(walked, 1.5)), len(x) - 1)
+    dx, dy = x[j] - x[0], y[j] - y[0]
+    slope = dx / dy if dy > 0.3 * math.hypot(dx, dy) else 0.0       # x per yard upfield
+    shift = float(np.clip(slope * y[0], -y[0], y[0]))
+    n = max(1, int(math.ceil(y[0] / EXTEND_STEP)))
+    t = np.linspace(0.0, 1.0, n + 1)[:-1]                            # from the line up to (not incl.) the old start
+    x = np.concatenate([x[0] - shift * (1 - t), x])
+    y = np.concatenate([y[0] * t, y])
+    if seg is not None:
+        seg = [seg[0] if seg else "route"] * n + seg
+    return x, y, seg, True
+
+
+def _official(frame: pd.DataFrame, kind: str, gsis) -> pd.DataFrame:
+    """
+    The player's own numbers on each play, counted the way the official stats are: his passing / receiving / rushing
+    yards (pbp's per-player columns, plus yards after a lateral to him) and whether he's credited with the touchdown.
+    Summed over his plays, they make his game log.
+    """
+    if not len(frame):
+        return frame
+    num = lambda c: pd.to_numeric(frame[c], errors="coerce").fillna(0.0) if c in frame else pd.Series(0.0, index=frame.index)
+    his = lambda c: (frame[c] == gsis) if c in frame and gsis is not None else pd.Series(False, index=frame.index)
+    if kind == "pass":
+        yds, td = num("passing_yards"), num("pass_touchdown") == 1
+    else:
+        own, lat = ("receiving_yards", "receiver_player_id"), ("lateral_receiving_yards", "lateral_receiver_player_id")
+        if kind == "carry":
+            own, lat = ("rushing_yards", "rusher_player_id"), ("lateral_rushing_yards", "lateral_rusher_player_id")
+        yds = num(own[0]).where(his(own[1]), 0.0) + num(lat[0]).where(his(lat[1]), 0.0)
+        td = his("td_player_id")
+    # NGS draws two-point tries too; they aren't in the game log. Nor is a play he only got on a lateral a target /
+    # carry of his (its yards are)
+    two = num("two_point_attempt") == 1
+    lateral = frame["lateral"].fillna(False).astype(bool) if "lateral" in frame else False
+    return frame.assign(player_yards=yds.where(~two, 0.0), player_td=td & ~two, in_log=~two & ~lateral)
 
 
 _route_guesses: dict[int, tuple] = {}     # season -> (store stamp, {(game_id, play_id): top route guess})
@@ -546,10 +606,11 @@ def play_columns(job: "Job", cols: list[str]) -> dict:
     return out
 
 
-def _plays_json(kind: str, matched: pd.DataFrame, chart_df: pd.DataFrame, season: int | None = None) -> list[dict]:
+def _plays_json(kind: str, matched: pd.DataFrame, chart_df: pd.DataFrame, season: int | None = None,
+                gsis=None) -> list[dict]:
     filt_cols = _panel_cols(kind)
     matched = derived.with_columns(matched, filt_cols) if len(matched) else matched
-    cols = list(dict.fromkeys(CORE + EXTRA[kind] + filt_cols))
+    cols = list(dict.fromkeys(CORE + EXTRA[kind] + OFFICIAL + filt_cols))
     out = []
     pred = None
     no_fit = set()
@@ -559,6 +620,7 @@ def _plays_json(kind: str, matched: pd.DataFrame, chart_df: pd.DataFrame, season
         bad = matched["implausible"].fillna(False).astype(bool)
         no_fit = set(zip(matched.loc[bad, "chart_game_id"], matched.loc[bad, "chart_carry_id"]))
         matched = matched[~bad]
+    matched = _official(matched, kind, gsis)
     if kind == "route" and len(matched):
         P = RT.predict_proba(matched)
         pred = [None if not np.isfinite(r).all() else sorted(zip(RT.CLASSES, r.round(3).tolist()), key=lambda t: -t[1])[:4]
@@ -571,12 +633,11 @@ def _plays_json(kind: str, matched: pd.DataFrame, chart_df: pd.DataFrame, season
             if c not in matched.columns:
                 continue
             v = r[c]
-            if c in ("path_x", "path_y"):
-                d[c] = _path(v)
-            elif c == "path_segment":
-                d[c] = [str(s) for s in v] if v is not None else []
-            else:
-                d[c] = _clean(v)
+            if c in ("path_x", "path_y", "path_segment"):
+                continue
+            d[c] = _clean(v)
+        if kind != "pass":
+            _put_line(d, kind, r.get("path_x"), r.get("path_y"), r.get("path_segment") if kind == "route" else None)
         d["week"] = _week(r.get("week"), r.get("season_type"))
         if pred is not None:
             d["route_guess"] = pred[i]
@@ -590,10 +651,63 @@ def _plays_json(kind: str, matched: pd.DataFrame, chart_df: pd.DataFrame, season
     return out
 
 
+def _put_line(d: dict, kind: str, xs, ys, seg):
+    """A play's chart line onto its JSON row, started from the line of scrimmage (_from_los). False if it isn't drawn."""
+    line = _from_los(kind, xs, ys, seg)
+    if line is None:
+        d.update(path_x=[], path_y=[], line_hidden=True)
+        if kind == "route":
+            d["path_segment"] = []
+        return False
+    x, y, sg, extended = line
+    d.update(path_x=_path(x), path_y=_path(y))
+    if kind == "route":
+        d["path_segment"] = [str(v) for v in sg] if sg is not None else []
+    if extended:
+        d["start_extended"] = True
+    return True
+
+
 UNDRAWN_DEPTH_OFFSET = 0.56   # an incompletion's dot sits this much deeper than pbp air yards (median, 2018-25)
 
 
 def _undrawn(job, charts, pb: pd.DataFrame, matched: pd.DataFrame) -> pd.DataFrame:
+    if job.kind != "pass":
+        return _unlined(job, charts, pb, matched)
+    return _undrawn_passes(job, charts, pb, matched)
+
+
+def _unlined(job, charts, pb: pd.DataFrame, matched: pd.DataFrame) -> pd.DataFrame:
+    """
+    The player's targets / carries in his charted games that no chart line is matched to - NGS didn't draw them
+    (kneel-downs, some short plays), or their line couldn't be told apart from the others - as play-by-play rows
+    without a line. With them every target / carry of the game is there, so counts and yards are his game log's.
+    Also the plays where he only got the ball on a lateral (flagged `lateral`): his yards on them count, but they're
+    not his targets / carries.
+    """
+    gsis = job.gsis
+    if not isinstance(gsis, str) or not len(pb):
+        return pd.DataFrame()
+    week_of = {str(c["gameId"]): S.week_label(c) for c in charts}
+    games = pb["old_game_id"].astype(str).isin(week_of)
+    real = pb["two_point_attempt"].fillna(0) != 1 if "two_point_attempt" in pb else True
+    if job.kind == "route":
+        own = (pb["receiver_player_id"] == gsis) & (pb["play_type"] == "pass") & (pb["pass_attempt"] == 1)
+        lat = pb["lateral_receiver_player_id"] == gsis if "lateral_receiver_player_id" in pb else False
+    else:
+        own = (pb["rusher_player_id"] == gsis) & pb["play_type"].isin(["run", "qb_kneel"]) & (pb["rush_attempt"] == 1)
+        lat = pb["lateral_rusher_player_id"] == gsis if "lateral_rusher_player_id" in pb else False
+    cand = pb[games & real & (own | lat)].copy()
+    cand["lateral"] = ~own[cand.index]
+    if len(matched) and "implausible" in matched:     # lines no play fits are shown without one (_plays_json)
+        matched = matched[~matched["implausible"].fillna(False).astype(bool)]
+    have = set(zip(matched["game_id"], matched["play_id"])) if len(matched) else set()
+    und = cand[[(g, q) not in have for g, q in zip(cand["game_id"], cand["play_id"])]].copy()
+    und["chart_week"] = und["old_game_id"].astype(str).map(week_of)
+    return _official(und, job.kind, gsis)
+
+
+def _undrawn_passes(job, charts, pb: pd.DataFrame, matched: pd.DataFrame) -> pd.DataFrame:
     """
     The QB's pass attempts in his charted games that NGS didn't draw - ~1 in 5 incompletions (every pass with no
     intended receiver, and some others), spikes, and the odd completion - as pbp rows with an estimated spot: pbp
@@ -602,7 +716,7 @@ def _undrawn(job, charts, pb: pd.DataFrame, matched: pd.DataFrame) -> pd.DataFra
     With them, attempts and completion % match the box score.
     """
     from next_gen_scrapy import pbp_match as PM
-    gsis = PM._esb_to_gsis([job.esb_id]).iloc[0]
+    gsis = job.gsis
     if not isinstance(gsis, str) or not len(pb):
         return pd.DataFrame()
     week_of = {str(c["gameId"]): S.week_label(c) for c in charts}
@@ -625,7 +739,7 @@ def _undrawn(job, charts, pb: pd.DataFrame, matched: pd.DataFrame) -> pd.DataFra
     und["pass_type"] = np.select([flag("pass_touchdown"), flag("interception"), flag("complete_pass")],
                                  ["TOUCHDOWN", "INTERCEPTION", "COMPLETE"], "INCOMPLETE")
     und["chart_week"] = und["old_game_id"].astype(str).map(week_of)
-    return und
+    return _official(und, "pass", gsis)
 
 
 def _undrawn_json(kind: str, und: pd.DataFrame) -> list[dict]:
@@ -633,16 +747,20 @@ def _undrawn_json(kind: str, und: pd.DataFrame) -> list[dict]:
         return []
     filt_cols = _panel_cols(kind)
     und = derived.with_columns(und, filt_cols)
-    cols = list(dict.fromkeys(CORE + EXTRA[kind] + filt_cols))
+    cols = list(dict.fromkeys(CORE + EXTRA[kind] + OFFICIAL + filt_cols))
     out = []
     for _, r in und.iterrows():
         d = {"id": f"{r['game_id']}:{float(r['play_id'])}", "matched": True, "estimated": True}
         for c in cols:
             if c in und.columns and c not in ("path_x", "path_y", "path_segment"):
                 d[c] = _clean(r[c])
+        if kind != "pass":
+            d.update(path_x=[], path_y=[])
+            if r.get("lateral") is True or r.get("lateral") is np.True_:
+                d["lateral"] = True
         d["week"] = r["chart_week"]
         d["location_prob"] = None
-        ngs = r.get("target_route")
+        ngs = r.get("target_route") if kind != "carry" else None
         ngs = RT.UNIFY.get(ngs, ngs) if isinstance(ngs, str) else None
         if ngs in RT.CLASSES:
             d["tree_route"], d["tree_route_src"] = ngs, "ngs"
@@ -670,11 +788,11 @@ def _unmatched(kind, matched, chart_df, no_fit=()):
             continue
         grp = grp.sort_values("point")
         d = {"id": f"u:{g}:{i}", "matched": False,
-             "week": _week(grp["week"].iloc[0], grp["season_type"].iloc[0] if "season_type" in grp else None),
-             "path_x": _path(grp["x_coord"]), "path_y": _path(grp["y_coord"])}
+             "week": _week(grp["week"].iloc[0], grp["season_type"].iloc[0] if "season_type" in grp else None)}
+        if not _put_line(d, kind, grp["x_coord"], grp["y_coord"], grp["segment"] if kind == "route" else None):
+            continue      # a piece of a line, with no play: nothing to show
         if kind == "route":
-            d.update(route_type=grp["route_type"].iloc[0], path_segment=[str(s) for s in grp["segment"]],
-                     chart_touchdown=bool(grp["touchdown"].iloc[0]))
+            d.update(route_type=grp["route_type"].iloc[0], chart_touchdown=bool(grp["touchdown"].iloc[0]))
         else:
             d.update(gain_class=grp["gain_class"].iloc[0], chart_touchdown=bool(grp["touchdown"].iloc[0]))
             if (g, i) in no_fit:
@@ -746,7 +864,8 @@ class Job:
     error: str | None = None
     created: float = field(default_factory=time.time)
     pending: list = field(default_factory=list)   # games charted but not in nflverse's play-by-play yet
-    undrawn: pd.DataFrame | None = None           # passes only: incompletions NGS didn't draw (estimated spots)
+    undrawn: pd.DataFrame | None = None           # the player's plays no chart line/dot is matched to (pbp rows)
+    gsis: str | None = None                       # his play-by-play id
     all_charts: list = field(default_factory=list)  # every chart of the job (some may come from the season store)
     stored: tuple | None = None                   # (chart rows, matched rows) from the season data store
     pbp_ref: pd.DataFrame | None = None
@@ -896,9 +1015,12 @@ def _publish(job: Job, charts, chart_df, matched, notes):
         s_rows, s_matched = job.stored
         chart_df = pd.concat([s_rows, chart_df], ignore_index=True) if len(chart_df) else s_rows
         matched = pd.concat([s_matched, matched], ignore_index=True) if len(matched) else s_matched
-    if job.kind == "pass" and job.pbp_ref is not None:
+    if job.gsis is None:
+        from next_gen_scrapy import pbp_match as PM
+        job.gsis = PM._esb_to_gsis([job.esb_id]).iloc[0]
+    if job.pbp_ref is not None:
         job.undrawn = _undrawn(job, charts, job.pbp_ref, matched)
-    plays = _plays_json(job.kind, matched, chart_df, job.season) + _undrawn_json(job.kind, job.undrawn)
+    plays = _plays_json(job.kind, matched, chart_df, job.season, job.gsis) + _undrawn_json(job.kind, job.undrawn)
     first = charts[0]
     job.frame = matched
     job.data = dict(

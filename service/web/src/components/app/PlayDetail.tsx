@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { type Kind, type Play, weekLabel } from "@/lib/api"
+import { lineNote } from "@/lib/stats"
 import { confColor, ROUTE_COLORS } from "@/lib/colors"
 import { pretty } from "@/lib/filters"
 import { cn } from "@/lib/utils"
@@ -57,7 +58,7 @@ export function PlayFacts({ play, kind, compact = false }: { play: Play; kind: K
 
       <section>
         <h4 className={h4}>Location confidence</h4>
-        {play.estimated ? <p className="text-xs leading-snug text-muted-foreground">Not drawn by Next Gen Stats. Its spot is estimated from play-by-play air yards and direction: depth is usually within a yard, but across the field it's only known to the side.</p> : <Bar p={play.location_prob} />}
+        {play.estimated ? <p className="text-xs leading-snug text-muted-foreground">{lineNote(kind, play)}</p> : <Bar p={play.location_prob} />}
         {!compact && (
           <p className="mt-2 text-xs text-muted-foreground">
             {play.n_candidates === 1

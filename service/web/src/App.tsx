@@ -21,12 +21,12 @@ import { PlayPanel } from "@/components/app/PlayPanel"
 import { LoadingCard, PlayerHero } from "@/components/app/PlayerHero"
 import { PlayerSearch, primaryKind } from "@/components/app/PlayerSearch"
 import { PlayTable } from "@/components/app/PlayTable"
-import { api, type Dataset, type FilterSpec, type Job, KIND_NOUN, type Kind, kindFromDataset, type Player, weekLabel } from "@/lib/api"
+import { api, type Dataset, type FilterSpec, type Job, KIND_NOUN, type Kind, kindFromDataset, type Play, type Player, weekLabel } from "@/lib/api"
 import type { ColorBy } from "@/lib/colors"
 import { exportChart } from "@/lib/exportChart"
 import { applyFilters, describe, type FilterState, filtersFromUrl, filtersToUrl, fromParams } from "@/lib/filters"
 import { type HeatMetric, isVersus, METRICS, splitOf } from "@/lib/heat"
-import { GAPS } from "@/lib/stats"
+import { GAPS, inLog, logYards, isCatch, isTd } from "@/lib/stats"
 import { answerJSON, modelStatus, preload, webgpuSupported } from "@/lib/llm"
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -496,8 +496,8 @@ export default function App() {
                         {activeCount > 0 && <Badge className="h-4 min-w-4 px-1 text-[10px]">{activeCount}</Badge>}
                       </Button>
                       <span className="text-sm font-medium">
-                        {visible.length}
-                        <span className="text-muted-foreground"> of {data.plays.length} {KIND_NOUN[sel.kind][1]}</span>
+                        {visible.filter(inLog).length}
+                        <span className="text-muted-foreground"> of {data.plays.filter(inLog).length} {KIND_NOUN[sel.kind][1]}</span>
                       </span>
                       {Object.entries(filters).map(([col, f]) => (
                         <Badge key={col} variant="secondary" className="gap-1 pr-1">
@@ -579,6 +579,22 @@ function Games({ data, visibleIds, onWeek }: { data: Dataset; visibleIds: Set<st
       : k === "route"
         ? `${g.receptions} rec · ${g.receivingYards} yds · ${g.touchdowns} TD`
         : `${g.carries} car · ${g.rushingYards} yds · ${g.touchdowns} TD`
+  // the same game from his plays here (every play-by-play play of his, drawn or not): what the totals above add up from
+  const ours = (ps: Play[]) => {
+    const log = ps.filter(inLog)
+    const yds = logYards(ps), td = ps.filter((p) => p.matched && isTd(p, k)).length
+    const c = log.filter((p) => isCatch(p, k)).length
+    if (k === "pass") {
+      const int = log.filter((p) => p.interception === 1 || p.interception === true).length
+      return { text: `${c}/${log.length} · ${yds} yds · ${td} TD · ${int} INT`, key: [c, log.length, yds, td, int] }
+    }
+    if (k === "route") return { text: `${c} rec (${log.length} tgt) · ${yds} yds · ${td} TD`, key: [c, yds, td] }
+    return { text: `${log.length} car · ${yds} yds · ${td} TD`, key: [log.length, yds, td] }
+  }
+  const boxKey = (g: any) =>
+    k === "pass" ? [g.completions, g.attempts, g.passingYards, g.touchdowns, g.interceptions]
+      : k === "route" ? [g.receptions, g.receivingYards, g.touchdowns] : [g.carries, g.rushingYards, g.touchdowns]
+  const pending = new Set((data.pending ?? []).map((p) => String(p.week)))
   return (
     <Card className="border-border/60 bg-card/50 p-0">
       <Table>
@@ -586,18 +602,35 @@ function Games({ data, visibleIds, onWeek }: { data: Dataset; visibleIds: Set<st
           <TableRow>
             <TableHead className="text-xs">Week</TableHead>
             <TableHead className="text-xs">Opponent</TableHead>
-            <TableHead className="text-xs">Box score</TableHead>
-            <TableHead className="text-right text-xs">On chart (filtered)</TableHead>
+            <TableHead className="text-xs">Box score (NGS)</TableHead>
+            <TableHead className="text-xs">Here (play-by-play)</TableHead>
+            <TableHead className="text-right text-xs">Shown (filtered)</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {data.games.map((g) => {
-            const n = data.plays.filter((p) => String(p.week) === String(g.week) && visibleIds.has(p.id)).length
+            const ps = data.plays.filter((p) => String(p.week) === String(g.week))
+            const n = ps.filter((p) => visibleIds.has(p.id) && inLog(p)).length
+            const o = ours(ps)
+            const box = boxKey(g)
+            const known = box.every((v) => v != null)
+            const same = known && box.every((v, i) => Number(v) === o.key[i])
             return (
               <TableRow key={g.game_id} className="cursor-pointer text-xs" onClick={() => onWeek(String(g.week))}>
                 <TableCell className="font-mono">{weekLabel(g.week)}</TableCell>
                 <TableCell className="font-mono">{g.opponent ?? "—"}</TableCell>
-                <TableCell>{line(g)}</TableCell>
+                <TableCell>{known ? line(g) : "—"}</TableCell>
+                <TableCell>
+                  {pending.has(String(g.week)) ? <span className="text-muted-foreground">waiting for play-by-play</span> : (
+                    <span className="inline-flex items-center gap-1.5">
+                      {o.text}
+                      {known && (same
+                        ? <span className="text-emerald-600 dark:text-emerald-400" title="Same as the box score">✓</span>
+                        : <span className="text-amber-600 dark:text-amber-400"
+                            title="Next Gen Stats' stat line differs from the play-by-play here: a later stat correction, or NGS's line is incomplete for this game">≠</span>)}
+                    </span>
+                  )}
+                </TableCell>
                 <TableCell className="text-right font-mono">{n}</TableCell>
               </TableRow>
             )

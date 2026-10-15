@@ -9,16 +9,38 @@ export function mean(xs: (number | null)[]): number | null {
 }
 const sum = (xs: (number | null)[]) => xs.reduce<number>((a, b) => a + (b ?? 0), 0)
 
+// a play with play-by-play says what happened on it; a chart line / dot with no play has only the chart's own colour
 export function isCatch(p: Play, kind: Kind): boolean {
+  if (kind === "carry") return false
+  if (p.complete_pass != null && p.complete_pass !== "") return truthy(p.complete_pass)
   if (kind === "pass") return p.pass_type === "COMPLETE" || p.pass_type === "TOUCHDOWN"
-  if (kind === "route") return p.route_type === "COMPLETE"
-  return false
+  return p.route_type === "COMPLETE"
 }
 
 export function isTd(p: Play, kind: Kind): boolean {
+  if (p.player_td != null) return truthy(p.player_td)
   if (kind === "pass") return p.pass_type === "TOUCHDOWN"
   return truthy(p.chart_touchdown)
 }
+
+/** a play that's one of his targets / carries / attempts in the game log (engine._official): every play-by-play
+ * play of his, drawn or not - not a chart line no play fits, a two-point try, or a play he only got on a lateral */
+export const inLog = (p: Play) => truthy(p.in_log)
+const PASS_EST = "Not drawn by Next Gen Stats. Its spot is estimated from play-by-play air yards and direction: depth is usually within a yard, but across the field it's only known to the side."
+
+/** why a play has no dot / line of its own (or a line drawn back to the line of scrimmage), or null */
+export function lineNote(kind: Kind, p: Play): string | null {
+  const noun = kind === "route" ? "target" : "carry"
+  if (kind === "pass") return p.estimated ? PASS_EST : null
+  if (p.lateral) return `He got the ball on a lateral: his yards on it count in his totals, but it isn't one of his ${noun === "carry" ? "carries" : "targets"}.`
+  if (p.estimated) return `No chart line for this ${noun}: Next Gen Stats didn't draw it, or its line couldn't be told apart from the others. It still counts in his totals, from play-by-play.`
+  if (p.line_hidden) return "Its chart line couldn't be traced back to the line of scrimmage (only a piece of it was readable), so it isn't drawn."
+  if (p.start_extended) return "The first yard or two of its chart line is hidden under the line of scrimmage or other lines; it's drawn straight back to the line."
+  return null
+}
+
+/** his yards in the game log on these plays (passing / receiving / rushing, laterals to him included) */
+export const logYards = (plays: Play[]) => sum(plays.filter((p) => p.matched).map((p) => num(p.player_yards)))
 
 export interface Kpi {
   label: string
@@ -34,45 +56,42 @@ const signed = (x: number | null, d = 2) => (x == null ? "—" : `${x > 0 ? "+" 
 const tone = (x: number | null): Kpi["tone"] => (x == null ? "neutral" : x > 0.02 ? "good" : x < -0.02 ? "bad" : "neutral")
 
 export function kpis(kind: Kind, plays: Play[]): Kpi[] {
-  const m = plays.filter((p) => p.matched)
+  const log = plays.filter(inLog)
+  const m = log
   const epa = mean(m.map((p) => num(p.epa)))
   const succ = mean(m.map((p) => (p.success == null ? null : truthy(p.success) ? 1 : 0)))
+  const yds = logYards(plays)
+  const tds = plays.filter((p) => p.matched && isTd(p, kind)).length
   if (kind === "pass") {
-    const comp = plays.filter((p) => isCatch(p, kind))
-    const yds = sum(m.filter((p) => truthy(p.complete_pass)).map((p) => num(p.yards_gained)))
+    const comp = log.filter((p) => isCatch(p, kind))
     return [
-      { label: "Attempts", value: String(plays.length), sub: `${comp.length} complete` },
-      { label: "Completion", value: pct(plays.length ? comp.length / plays.length : null), sub: "of all attempts" },
-      { label: "Yards", value: yds.toLocaleString(), sub: `${f1(m.length ? yds / m.length : null)} / att` },
-      {
-        label: "TD : INT",
-        value: `${plays.filter((p) => p.pass_type === "TOUCHDOWN").length} : ${plays.filter((p) => p.pass_type === "INTERCEPTION").length}`,
-      },
+      { label: "Attempts", value: String(log.length), sub: `${comp.length} complete` },
+      { label: "Completion", value: pct(log.length ? comp.length / log.length : null), sub: "of all attempts" },
+      { label: "Yards", value: yds.toLocaleString(), sub: `${f1(log.length ? yds / log.length : null)} / att` },
+      { label: "TD : INT", value: `${tds} : ${log.filter((p) => truthy(p.interception)).length}` },
       { label: "aDOT", value: f1(mean(m.map((p) => num(p.air_yards)))), sub: "avg depth of target", hint: "yds" },
       { label: "EPA / play", value: signed(epa), tone: tone(epa) },
       { label: "Success", value: pct(succ), sub: "positive-EPA plays" },
     ]
   }
   if (kind === "route") {
-    const rec = plays.filter((p) => isCatch(p, kind))
-    const yds = sum(m.filter((p) => truthy(p.complete_pass)).map((p) => num(p.yards_gained)))
-    const yac = mean(m.filter((p) => truthy(p.complete_pass)).map((p) => num(p.yards_after_catch)))
+    const rec = log.filter((p) => isCatch(p, kind))
+    const yac = mean(rec.map((p) => num(p.yards_after_catch)))
     return [
-      { label: "Charted targets", value: String(plays.length), sub: `${rec.length} caught` },
-      { label: "Catch rate", value: pct(plays.length ? rec.length / plays.length : null) },
+      { label: "Targets", value: String(log.length), sub: `${rec.length} caught` },
+      { label: "Catch rate", value: pct(log.length ? rec.length / log.length : null) },
       { label: "Yards", value: yds.toLocaleString(), sub: `${f1(rec.length ? yds / rec.length : null)} / rec` },
-      { label: "TDs", value: String(plays.filter((p) => isTd(p, kind)).length) },
+      { label: "TDs", value: String(tds) },
       { label: "aDOT", value: f1(mean(m.map((p) => num(p.air_yards)))), sub: "avg depth of target" },
       { label: "YAC / rec", value: f1(yac) },
       { label: "EPA / target", value: signed(epa), tone: tone(epa) },
     ]
   }
-  const yds = sum(m.map((p) => num(p.yards_gained)))
   const gains = m.map((p) => num(p.yards_gained)).filter((x): x is number => x != null)
   return [
-    { label: "Carries", value: String(plays.length) },
-    { label: "Yards", value: yds.toLocaleString(), sub: `${f1(gains.length ? yds / gains.length : null)} / carry` },
-    { label: "TDs", value: String(plays.filter((p) => isTd(p, kind)).length) },
+    { label: "Carries", value: String(log.length) },
+    { label: "Yards", value: yds.toLocaleString(), sub: `${f1(log.length ? yds / log.length : null)} / carry` },
+    { label: "TDs", value: String(tds) },
     { label: "Explosive", value: pct(gains.length ? gains.filter((g) => g >= 10).length / gains.length : null), sub: "10+ yd runs" },
     { label: "Stuffed", value: pct(gains.length ? gains.filter((g) => g <= 0).length / gains.length : null), sub: "no gain or loss" },
     { label: "EPA / carry", value: signed(epa), tone: tone(epa) },
@@ -80,7 +99,7 @@ export function kpis(kind: Kind, plays: Play[]): Kpi[] {
   ]
 }
 
-export function byWeek(kind: Kind, plays: Play[]) {
+export function byWeek(_kind: Kind, plays: Play[]) {
   const g = new Map<string, Play[]>()
   for (const p of plays) {
     const k = String(p.week ?? "?")
@@ -90,14 +109,11 @@ export function byWeek(kind: Kind, plays: Play[]) {
   return [...g.entries()]
     .sort((a, b) => order(a[0]) - order(b[0]))
     .map(([week, ps]) => {
-      const m = ps.filter((p) => p.matched)
-      const yards = sum(
-        (kind === "carry" ? m : m.filter((p) => truthy(p.complete_pass))).map((p) => num(p.yards_gained))
-      )
+      const m = ps.filter(inLog)
       return {
         week: week.startsWith("post") ? weekLabel(week) : `W${week}`,
-        plays: ps.length,
-        yards,
+        plays: m.length,
+        yards: logYards(ps),
         epa: Number((mean(m.map((p) => num(p.epa))) ?? 0).toFixed(3)),
         opponent: m.find((p) => p.defteam)?.defteam ?? "",
       }
@@ -200,8 +216,8 @@ export function routeTree(kind: Kind, plays: Play[]) {
     route,
     targets: ps.length,
     catches: ps.filter((p) => isCatch(p, kind)).length,
-    yards: sum(ps.map((p) => num(p.yards_gained))),
-    ypt: mean(ps.filter((p) => p.matched).map((p) => num(p.yards_gained))) ?? 0,   // play-by-play's, so matched only
+    yards: logYards(ps),
+    ypt: mean(ps.filter((p) => p.matched).map((p) => num(p.player_yards))) ?? 0,   // play-by-play's, so matched only
     epa: mean(ps.map((p) => num(p.epa))) ?? 0,
     td: ps.filter((p) => isTd(p, kind)).length,
   }))
@@ -248,7 +264,7 @@ export function receivers(plays: Play[], top = 5) {
   const g = new Map<string, Play[]>()
   for (const p of plays) {
     const n = p.receiver_player_name
-    if (!n) continue
+    if (!n || !inLog(p)) continue
     g.set(n, [...(g.get(n) ?? []), p])
   }
   const total = [...g.values()].reduce((a, ps) => a + ps.length, 0)
@@ -258,14 +274,14 @@ export function receivers(plays: Play[], top = 5) {
     return {
       name, position: ps.find((p) => p.receiver_position)?.receiver_position ?? null,
       targets: ps.length, share: total ? ps.length / total : 0, catches: comp.length,
-      yards: sum(m.filter((p) => truthy(p.complete_pass)).map((p) => num(p.yards_gained))),
+      yards: logYards(ps),
       adot: mean(m.map((p) => num(p.air_yards))), epa: mean(m.map((p) => num(p.epa))),
-      td: ps.filter((p) => p.pass_type === "TOUCHDOWN").length,
+      td: ps.filter((p) => isTd(p, "pass")).length,
     }
   }).sort((a, b) => b.targets - a.targets)
   const lead = rows.slice(0, top).map((r) => r.name)
   const wk = new Map<string, Play[]>()
-  for (const p of plays) if (p.receiver_player_name) {
+  for (const p of plays) if (p.receiver_player_name && inLog(p)) {
     const k = String(p.week ?? "?")
     wk.set(k, [...(wk.get(k) ?? []), p])
   }

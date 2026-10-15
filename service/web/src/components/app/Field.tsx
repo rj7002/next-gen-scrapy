@@ -567,7 +567,7 @@ function PlayHoverCard({ play, kind, x, y }: { play: Play; kind: Kind; x: number
       <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
         <span className="truncate">{playWhen(play)}</span>
         {!play.matched && <span className="shrink-0 text-amber-300">{play.reason === "no_fit" ? "no play fits" : "unmatched"}</span>}
-        {play.estimated && <span className="shrink-0 text-zinc-400">not drawn by NGS</span>}
+        {play.estimated && <span className="shrink-0 text-zinc-400">{kind === "pass" ? "not drawn by NGS" : "no chart line"}</span>}
       </div>
       {play.matched ? (
         <>
