@@ -497,9 +497,36 @@ def _panel_cols(kind: str) -> list[str]:
     return [f["col"] for f in for_table(TABLE[kind]) if f.get("panel", True)]
 
 
+NGS_TRACKING = {"ngs_carrier_dist", "ngs_top_speed"}
+
+
+def _with_ngs_tracking(job: "Job") -> None:
+    """The NGS ball-carrier distance / top speed on the job's plays, when its frame came without them (the season data
+    store's matches don't carry them): fetched for the player's team-weeks only, then kept on the job."""
+    f = job.frame
+    if f is None or not len(f) or getattr(job, "ngs_tracking", False):
+        return
+    job.ngs_tracking = True
+    if "ngs_carrier_dist" in f and f["ngs_carrier_dist"].notna().any():
+        return
+    try:
+        from next_gen_scrapy.ngs_distance import add_ngs_distance
+        _, p = pbp(job.season)
+        sub = p[p["game_id"].isin(set(f["game_id"]))]
+        sub = add_ngs_distance(sub, cache_dir=NGS_DIST_CACHE, only=set(f["posteam"].dropna().unique()))
+        key = dict(zip(zip(sub["game_id"], sub["play_id"].astype(float)), zip(sub["ngs_carrier_dist"], sub["ngs_max_speed"])))
+        got = [key.get((g, float(pl)), (None, None)) for g, pl in zip(f["game_id"], f["play_id"])]
+        add = pd.DataFrame({"ngs_carrier_dist": [a for a, _ in got], "ngs_max_speed": [b for _, b in got]}, index=f.index)
+        job.frame = pd.concat([f.drop(columns=[c for c in add.columns if c in f]), add], axis=1)
+    except Exception:
+        traceback.print_exc()
+
+
 def play_columns(job: "Job", cols: list[str]) -> dict:
     """{col: {play id: value}} for the job's plays - any filter column, stored or derived - for the Ask bar's filters
     on columns the play rows leave out."""
+    if NGS_TRACKING & set(cols):
+        _with_ngs_tracking(job)
     allowed = {f["col"] for f in for_table(TABLE[job.kind])}
     out = {}
     for c in cols:

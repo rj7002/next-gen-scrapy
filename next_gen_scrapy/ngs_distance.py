@@ -37,11 +37,12 @@ def _get(url, params):
     return _S.get(url, params=params, headers={"Referer": f"{_S.BASE}/stats/top-plays"}).json()
 
 
-def teams(season):
-    """NGS teamIds for a season (the two Pro Bowl sides left out)."""
+def teams(season, only=None):
+    """NGS teamIds for a season (the two Pro Bowl sides left out); only: just these teams (nflverse abbreviations)."""
     d = _get(TEAMS_API, {"season": int(season)})
     rows = d if isinstance(d, list) else next(v for v in d.values() if isinstance(v, list))
-    return [t["teamId"] for t in rows if t.get("abbr") not in ("AFC", "NFC")]
+    want = None if only is None else {{"LA": "LAR"}.get(t, t) for t in only}
+    return [t["teamId"] for t in rows if t.get("abbr") not in ("AFC", "NFC") and (want is None or t.get("abbr") in want)]
 
 
 def fetch_list(season, season_type, week, team_id, cache_dir=None, cache=True, api=DIST_API):
@@ -61,12 +62,13 @@ def fetch_list(season, season_type, week, team_id, cache_dir=None, cache=True, a
     return data
 
 
-def carrier_distances(season, weeks, cache_dir=None, workers=8, live_weeks=()):
+def carrier_distances(season, weeks, cache_dir=None, workers=8, live_weeks=(), only=None):
     """One row per play in the lists: old_game_id, play_id, ngs_carrier_dist, the carrier's ids and the play's
     type - plus per team-week list the shortest distance it holds and whether it was full (list_min, list_full).
 
-    weeks: (season_type, ngs_week) pairs, e.g. [("REG", 1), ..., ("POST", 19)]; live_weeks: those not to cache yet."""
-    ids = teams(season)
+    weeks: (season_type, ngs_week) pairs, e.g. [("REG", 1), ..., ("POST", 19)]; live_weeks: those not to cache yet;
+    only: just these teams' lists (nflverse abbreviations) - a player's own plays are all in his team's."""
+    ids = teams(season, only)
     jobs = [(st, wk, t, api) for st, wk in weeks for t in ids for api in (DIST_API, SPEED_API)]
 
     def one(job):
@@ -112,7 +114,7 @@ def _ngs_weeks(pbp):
     return out
 
 
-def add_ngs_distance(pbp, cache_dir=None, workers=8):
+def add_ngs_distance(pbp, cache_dir=None, workers=8, only=None):
     """pbp with `ngs_carrier_dist` (yards the ball carrier went, from NGS) and `ngs_dist_below` (a run or catch
     missing from its team-week's full list went less far than this), for every game in it."""
     pbp = pbp.copy()
@@ -125,7 +127,7 @@ def add_ngs_distance(pbp, cache_dir=None, workers=8):
         live = set()                                     # a finished season: everything can be cached
     live |= {(a, b, c + 1) for a, b, c in live if b == "POST"}
     frames = [carrier_distances(season, sorted({(st, wk) for s, st, wk in want if s == season}), cache_dir, workers,
-                                live_weeks={(st, wk) for s, st, wk in live if s == season})
+                                live_weeks={(st, wk) for s, st, wk in live if s == season}, only=only)
               for season in sorted({s for s, _, _ in want})]
     d = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=["old_game_id", "play_id"])
     key = list(zip(pbp["old_game_id"].astype(str), pbp["play_id"].astype(float)))
